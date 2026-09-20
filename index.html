@@ -1,176 +1,201 @@
 <!DOCTYPE html>
 <html lang="vi">
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>TerraGuard | Trạm cảnh báo sạt lở</title>
-	<link rel="preconnect" href="https://fonts.googleapis.com">
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-	<link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TerraGuard - Giám sát độ rung đất ESP32</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-	<section class="auth-screen" id="authScreen">
-		<div class="auth-card">
-			<div class="brand auth-brand"><span class="brand-mark"><i data-lucide="mountain-snow"></i></span><span>terra<span>guard</span></span></div>
-			<div class="eyebrow">Trạm giám sát TG-042</div>
-			<h1 id="authTitle">Đăng nhập hệ thống</h1>
-			<p class="auth-description">Đăng nhập để theo dõi dữ liệu cảm biến và cảnh báo sạt lở.</p>
-			<form id="authForm" class="auth-form">
-				<label for="authEmail">Email</label><input id="authEmail" type="email" autocomplete="email" required placeholder="ten@vidu.com">
-				<label for="authPassword">Mật khẩu</label><input id="authPassword" type="password" autocomplete="current-password" minlength="6" required placeholder="Tối thiểu 6 ký tự">
-				<button type="submit" id="authSubmit"><i data-lucide="log-in"></i>Đăng nhập</button>
-			</form>
-			<button type="button" class="auth-switch" id="authSwitch">Chưa có tài khoản? Đăng ký</button>
-			<p class="auth-error" id="authError" role="alert"></p>
-		</div>
-	</section>
-	<div class="app-shell auth-hidden" id="appShell">
-		<aside class="sidebar">
-			<button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Ẩn thanh bên" title="Ẩn thanh bên"><i data-lucide="panel-left-close"></i></button>
-			<div class="brand"><span class="brand-mark"><i data-lucide="mountain-snow"></i></span><span>terra<span>guard</span></span></div>
-			<div class="workspace-label">Trạm giám sát</div>
-			<div class="station-picker"><div><span class="station-dot"></span><strong>Đèo Khánh Lê</strong><small>Trạm TG-042 · Khánh Hòa</small></div><i data-lucide="chevrons-up-down"></i></div>
-			<nav>
-				<a class="active tab-link" href="#tong-quan" data-tab="overview"><i data-lucide="layout-dashboard"></i>Tổng quan</a>
-				<a class="tab-link" href="#cam-bien" data-tab="sensors"><i data-lucide="waves"></i>Dữ liệu cảm biến<span class="nav-count">8</span></a>
-				<a class="tab-link" href="#canh-bao" data-tab="alerts"><i data-lucide="siren"></i>Cảnh báo<span class="nav-count danger">2</span></a>
-				<a class="tab-link" href="#thoi-tiet" data-tab="weather"><i data-lucide="cloud-sun"></i>Dự báo thời tiết</a>
-				<a class="tab-link" href="#vi-tri" data-tab="location"><i data-lucide="map-pin"></i>Vị trí & bản đồ</a>
-			</nav>
-			<div class="sidebar-bottom"><a class="tab-link" href="#cai-dat" data-tab="settings"><i data-lucide="settings-2"></i>Cấu hình hệ thống</a><div class="operator"><div class="avatar">TV</div><div><strong>Trực ca hiện tại</strong><small>Thứ năm, 03/09/2026</small></div><i data-lucide="more-horizontal"></i></div></div>
-		</aside>
 
-		<main class="main-content" id="tong-quan">
-			<header class="topbar"><div class="breadcrumb">Giám sát thời gian thực <span>/</span> Tổng quan</div><div class="top-actions"><div class="last-sync"><span class="pulse-dot"></span>Đã đồng bộ <strong id="syncTime">vừa xong</strong></div><button class="icon-button" id="notificationBtn" aria-label="Thông báo"><i data-lucide="bell"></i><b></b></button><button class="profile-button" id="logoutBtn" title="Đăng xuất"><span id="userRole">Tài khoản</span><i data-lucide="log-out"></i></button></div></header>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🌱</span>
+      <div>
+        <h1>TerraGuard</h1>
+        <p class="subtitle">Giám sát độ rung đất &amp; cảm biến ESP32</p>
+      </div>
+    </div>
+    <div class="conn-status" id="connStatus">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">Đang kết nối MQTT...</span>
+    </div>
+  </header>
 
-			<section class="hero-row">
-				<div class="hero-copy-block">
-					<div class="eyebrow"><span class="live-line"></span>Trạng thái trạm</div>
-					<h1>Xin chào, Tuấn.</h1>
-					<p class="hero-copy">Hệ thống đang theo dõi sườn dốc quanh <strong>Đèo Khánh Lê</strong> — nơi có địa hình dốc và lượng mưa cao trong mùa này.</p>
-					<div class="hero-status-row">
-						<div class="system-status"><span class="status-check"><i data-lucide="check"></i></span><div><strong>Hệ thống ổn định</strong><small>Cập nhật lần cuối <span id="lastUpdate">10:42:18</span></small></div><i data-lucide="more-horizontal"></i></div>
-					</div>
-				</div>
-				<div class="hero-illustration" aria-hidden="true">
-					<svg viewBox="0 0 300 130" xmlns="http://www.w3.org/2000/svg">
-						<defs>
-							<linearGradient id="ridgeFar" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0" stop-color="#a9c0a6"/><stop offset="1" stop-color="#8fae8c"/>
-							</linearGradient>
-							<linearGradient id="ridgeMid" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0" stop-color="#5c8461"/><stop offset="1" stop-color="#3d6a4a"/>
-							</linearGradient>
-							<linearGradient id="ridgeNear" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0" stop-color="#2f5138"/><stop offset="1" stop-color="#24462f"/>
-							</linearGradient>
-						</defs>
-						<path d="M0,90 L35,58 L70,80 L110,42 L150,72 L190,36 L230,66 L265,48 L300,70 L300,130 L0,130 Z" fill="url(#ridgeFar)" opacity="0.55"/>
-						<path d="M0,108 L45,74 L85,98 L125,60 L165,92 L205,54 L245,86 L300,58 L300,130 L0,130 Z" fill="url(#ridgeMid)" opacity="0.85"/>
-						<path d="M0,124 L30,98 L60,116 L100,80 L140,108 L175,86 L215,110 L255,88 L300,112 L300,130 L0,130 Z" fill="url(#ridgeNear)"/>
-						<path d="M60,116 C90,100 100,90 128,84 C150,79 158,68 180,86" fill="none" stroke="#e7ddc0" stroke-width="2" stroke-dasharray="1 6" stroke-linecap="round" opacity="0.8"/>
-						<circle cx="180" cy="86" r="4.5" fill="#9a3a2a"/>
-						<circle cx="180" cy="86" r="8" fill="none" stroke="#9a3a2a" stroke-width="1.5" opacity="0.45"/>
-					</svg>
-				</div>
-			</section>
+  <main class="container">
 
-			<div class="view-tabs" role="tablist" aria-label="Các màn hình giám sát"><button class="view-tab active" data-tab="overview" role="tab">Tổng quan</button><button class="view-tab" data-tab="sensors" role="tab">Cảm biến</button><button class="view-tab" data-tab="alerts" role="tab">Cảnh báo <b>2</b></button><button class="view-tab" data-tab="weather" role="tab">Thời tiết</button><button class="view-tab" data-tab="location" role="tab">Bản đồ</button><button class="view-tab" data-tab="settings" role="tab">Cấu hình</button></div>
+    <section class="kpi-strip">
+      <div class="kpi-card soil-card" id="soilKpiCard">
+        <span class="kpi-label">Độ ẩm đất</span>
+        <strong id="soilHumidityKpi">-- %</strong>
+        <small id="soilKpiNote">Chờ dữ liệu</small>
+      </div>
 
-			<section class="metric-grid screen-item" data-screens="overview sensors" id="cam-bien">
-				<article class="metric-card soil-card">
-					<div class="card-top"><span class="metric-icon"><i data-lucide="droplets"></i></span><span class="tag safe">ỔN ĐỊNH</span></div>
-					<div class="gauge-wrap"><svg viewBox="0 0 62 62"><circle class="gauge-track" cx="31" cy="31" r="27"/><circle class="gauge-value" id="soilGauge" cx="31" cy="31" r="27" stroke-dasharray="169.6" stroke-dashoffset="55"/></svg></div>
-					<div class="metric-label">Độ ẩm đất</div>
-					<div class="metric-value"><span id="soilValue">68.4</span><small>%</small></div>
-					<div class="metric-foot"><span class="trend up"><i data-lucide="trending-up"></i> 2.8%</span><span>so với 1 giờ trước</span></div>
-				</article>
-				<article class="metric-card movement-card">
-					<div class="card-top"><span class="metric-icon"><i data-lucide="move-3d"></i></span><span class="tag watch">THEO DÕI</span></div>
-					<div class="gauge-wrap"><svg viewBox="0 0 62 62"><circle class="gauge-track" cx="31" cy="31" r="27"/><circle class="gauge-value" id="movementGauge" cx="31" cy="31" r="27" stroke-dasharray="169.6" stroke-dashoffset="130"/></svg></div>
-					<div class="metric-label">MPU6050 · Tọa độ gia tốc</div>
-					<div class="axis-values" aria-label="Tọa độ gia tốc MPU6050">
-						<span>X <b id="mpuXValue">0.004</b><small> g</small></span>
-						<span>Y <b id="mpuYValue">-0.002</b><small> g</small></span>
-						<span>Z <b id="mpuZValue">0.998</b><small> g</small></span>
-					</div>
-					<div class="adxl-reading"><span>ADXL345 · Chuyển động</span><strong><span id="movementValue">0.012</span> <small>mm/s</small></strong></div>
-					<div class="metric-foot"><span class="trend flat"><i data-lucide="minus"></i> Ổn định</span><span id="adxlSource">ADXL345</span></div>
-				</article>
-				<article class="metric-card rain-card">
-					<div class="card-top"><span class="metric-icon"><i data-lucide="cloud-rain"></i></span><span class="tag rain">MƯA NHẸ</span></div>
-					<div class="metric-label">Lượng mưa / 1 giờ</div>
-					<div class="metric-value"><span id="rainValue">3.6</span><small> mm</small></div>
-					<div class="metric-foot"><span class="trend down"><i data-lucide="arrow-down-right"></i> 12%</span><span>Đo bởi cảm biến mưa</span></div>
-					<div class="rain-bars" id="rainBars"></div>
-				</article>
-				<article class="metric-card gps-card">
-					<div class="card-top"><span class="metric-icon"><i data-lucide="navigation"></i></span><span class="tag safe">ĐÃ ĐỊNH VỊ</span></div>
-					<div class="gps-plate"><i data-lucide="compass"></i></div>
-					<div class="metric-label">Tọa độ GPS</div>
-					<div class="gps-value">12°12'42.8"N<br>108°42'15.6"E</div>
-					<div class="metric-foot"><span class="trend up"><i data-lucide="radio"></i> 11 vệ tinh</span><span>Độ chính xác ± 3m</span></div>
-				</article>
-			</section>
+      <div class="kpi-card water-card" id="waterKpiCard">
+        <span class="kpi-label">Mực nước</span>
+        <strong id="waterDistanceKpi">-- cm</strong>
+        <small id="waterKpiNote">Chờ dữ liệu</small>
+      </div>
 
-			<section class="content-grid">
-				<article class="panel chart-panel screen-item" data-screens="sensors"><div class="panel-heading"><div><div class="eyebrow">Phân tích dữ liệu</div><h2>Độ ẩm đất & lượng mưa</h2></div><div class="chart-tools"><div class="legend"><span><i class="legend-dot amber"></i>Độ ẩm đất</span><span><i class="legend-dot blue"></i>Lượng mưa</span></div><select id="rangeSelect"><option>24 giờ qua</option><option>7 ngày qua</option><option>30 ngày qua</option></select></div></div><div class="chart-wrap"><div class="y-labels"><span>100</span><span>75</span><span>50</span><span>25</span><span>0</span></div><div class="chart"><div class="chart-grid"></div><svg viewBox="0 0 800 210" preserveAspectRatio="none" aria-label="Biểu đồ dữ liệu"><path class="rain-area" d="M0,193 L42,188 L84,194 L126,178 L168,185 L210,166 L252,176 L294,160 L336,173 L378,153 L420,164 L462,149 L504,158 L546,126 L588,143 L630,118 L672,132 L714,96 L756,110 L800,90 L800,210 L0,210Z"></path><path class="soil-line" d="M0,103 L42,108 L84,100 L126,97 L168,91 L210,93 L252,82 L294,85 L336,78 L378,82 L420,70 L462,75 L504,62 L546,66 L588,57 L630,62 L672,48 L714,54 L756,40 L800,46"></path><path class="rain-line" d="M0,193 L42,188 L84,194 L126,178 L168,185 L210,166 L252,176 L294,160 L336,173 L378,153 L420,164 L462,149 L504,158 L546,126 L588,143 L630,118 L672,132 L714,96 L756,110 L800,90"></path></svg><div class="x-labels"><span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>Bây giờ</span></div></div></div><div class="chart-note"><span class="note-icon"><i data-lucide="info"></i></span><span>Độ ẩm đang tăng nhẹ sau trận mưa lúc <strong>08:15</strong>. Chưa vượt ngưỡng cảnh báo.</span></div></article>
-				<article class="panel alert-panel screen-item" data-screens="overview alerts" id="canh-bao"><div class="panel-heading"><div><div class="eyebrow">Phản hồi tức thời</div><h2>Cảnh báo gần đây</h2></div><button class="text-button">Xem tất cả <i data-lucide="arrow-up-right"></i></button></div><div class="alert-list"><div class="alert-item critical"><span class="alert-symbol"><i data-lucide="triangle-alert"></i></span><div><strong>Rung động bất thường</strong><small>ADXL345 · 10:37:42</small></div><span class="alert-level">CAO</span></div><div class="alert-item caution"><span class="alert-symbol"><i data-lucide="cloud-rain"></i></span><div><strong>Cường độ mưa tăng</strong><small>Cảm biến mưa · 10:21:08</small></div><span class="alert-level">CHÚ Ý</span></div><div class="alert-item resolved"><span class="alert-symbol"><i data-lucide="check-circle-2"></i></span><div><strong>Độ ẩm đất trở về an toàn</strong><small>Độ ẩm đất · 09:48:16</small></div><span class="alert-level">ĐÃ XỬ LÝ</span></div></div><div class="alert-footer"><span><span class="mini-pulse"></span>Đang giám sát tự động</span><button class="outline-button" id="testAlertBtn"><i data-lucide="siren"></i> Gửi cảnh báo thử</button></div></article>
-			</section>
+      <div class="kpi-card motion-card" id="motionKpiCard">
+        <span class="kpi-label">Độ rung</span>
+        <strong id="movementKpi">--</strong>
+        <small>mức rung</small>
+      </div>
+    </section>
 
-			<section class="bottom-grid" id="thoi-tiet">
-				<article class="panel weather-panel screen-item" data-screens="weather"><div class="panel-heading"><div><div class="eyebrow">Dự báo theo vị trí</div><h2 id="weatherLocation">Thời tiết tại trạm</h2></div><div class="weather-source"><span class="weather-status"></span><span id="weatherSource">Đang lấy vị trí...</span><i data-lucide="refresh-cw"></i></div></div>
-					<div class="weather-now">
-						<div class="weather-illustration"><i id="weatherIcon" data-lucide="cloud-sun"></i></div>
-						<div><strong id="weatherTemperature">--°</strong><span id="weatherDescription">Đang tải thời tiết...</span></div>
-						<div class="weather-now-meta"><span>Cảm giác như <b id="weatherFeels">--°</b></span><span>Độ ẩm <b id="weatherHumidity">--%</b></span><span>Gió <b id="weatherWind">-- km/h</b></span></div>
-					</div>
-					<div class="forecast-row" id="forecastRow"></div>
-				</article>
-				<article class="panel connection-panel screen-item" data-screens="settings"><div class="panel-heading"><div><div class="eyebrow">Kết nối thiết bị</div><h2>ESP32 & MQTT</h2></div><span class="connected-badge" id="connectionBadge"><span></span>ĐANG KẾT NỐI</span></div>
-					<div class="connection-body">
-						<div class="device-visual">
-							<svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="38" fill="none" stroke="#dbead9" stroke-width="1.5"/><circle cx="40" cy="40" r="29" fill="none" stroke="#c2e0c6" stroke-width="1.5"/><circle cx="40" cy="40" r="20" fill="#e3ecdd"/><rect x="27" y="27" width="26" height="26" rx="4" fill="#24462f"/><g fill="#efe8d8"><rect x="32" y="32" width="16" height="16" rx="2"/></g><g stroke="#24462f" stroke-width="2"><path d="M27 33h-4M27 40h-4M27 47h-4M53 33h4M53 40h4M53 47h4M33 27v-4M40 27v-4M47 27v-4M33 53v4M40 53v4M47 53v4"/></g></svg>
-						</div>
-						<div class="connection-detail"><div><small>THIẾT BỊ</small><strong>ESP32-TG042</strong></div><div><small>MQTT BROKER</small><strong>broker.terraguard.local</strong></div><div><small>GÓI TIN CUỐI</small><strong id="packetTime">2 giây trước</strong></div></div>
-					</div>
-					<div class="connection-footer"><span><i data-lucide="wifi"></i> Ping 42 ms</span><span><i data-lucide="database"></i> 98.7% gói tin</span><button class="link-button" id="connectionBtn">Kiểm tra kết nối <i data-lucide="arrow-right"></i></button></div>
-				</article>
-			</section>
+    <!-- Trạng thái rung tổng quan -->
+    <section class="state-banner" id="stateBanner">
+      <div class="state-icon" id="stateIcon">⏳</div>
+      <div class="state-info">
+        <h2 id="stateLabel">Chưa có dữ liệu</h2>
+        <p id="stateDesc">Đang chờ ESP32 gửi dữ liệu qua MQTT...</p>
+      </div>
+      <div class="state-value">
+        <span id="movementValue">--</span>
+        <small>mức rung</small>
+      </div>
+    </section>
 
-			<section class="panel location-panel screen-item" data-screens="location">
-				<div class="location-map" id="stationMap" aria-label="Bản đồ OpenStreetMap tại trạm Đèo Khánh Lê"></div>
-				<div class="location-details">
-					<div class="eyebrow">Vị trí trạm</div>
-					<h2>Đèo Khánh Lê, Khánh Hòa</h2>
-					<p>12°12'42.8"N · 108°42'15.6"E</p>
-					<span class="map-source"><i data-lucide="map"></i> Dữ liệu nền OpenStreetMap</span>
-					<svg class="contour-strip" viewBox="0 0 300 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-						<g fill="none" stroke="#3d6a4a" stroke-width="1.2">
-							<path d="M0,52 C40,30 60,50 100,34 C140,18 160,40 200,26 C240,12 260,32 300,20" opacity="0.25"/>
-							<path d="M0,60 C40,42 60,58 100,46 C140,32 160,52 200,40 C240,26 260,44 300,34" opacity="0.4"/>
-							<path d="M0,64 C40,52 60,64 100,56 C140,46 160,62 200,52 C240,42 260,58 300,48" opacity="0.6"/>
-						</g>
-					</svg>
-					<button class="outline-button" id="openMapBtn" style="color:#3d6a4a;border-color:#c9dfc4;margin-top:6px;"><i data-lucide="external-link"></i>Mở bản đồ</button>
-				</div>
-			</section>
+    <!-- Lưới số liệu -->
+    <section class="grid">
 
-			<section class="panel sim-panel screen-item" data-screens="settings" id="cai-dat"><div class="sim-copy"><div class="eyebrow">Cấu hình cảnh báo</div><h2>Ngưỡng & người nhận</h2><p>Chỉ tài khoản admin được thay đổi ngưỡng và danh sách số điện thoại.</p><span class="role-status" id="settingsRole">Đang kiểm tra quyền...</span></div><div class="settings-forms"><form class="threshold-form" id="thresholdForm"><label for="thresholdValue">Ngưỡng chuyển động (mm/s)</label><div><input id="thresholdValue" type="number" min="0" step="0.1" value="5"><button type="submit"><i data-lucide="save"></i>Lưu ngưỡng</button></div><small id="thresholdStatus">Đang tải cấu hình...</small></form><form class="phone-form" id="phoneForm"><label for="phoneNumber">Thêm số điện thoại nhận SMS</label><div><input id="phoneNumber" type="tel" inputmode="tel" placeholder="Ví dụ: 090 123 4567" autocomplete="tel"><button type="submit"><i data-lucide="plus"></i>Thêm số</button></div><small id="phoneStatus">Chưa cấu hình số nhận cảnh báo</small><ul class="phone-list" id="phoneList"></ul></form></div></section>
+      <div class="card">
+        <h3>Gia tốc ADXL345 (g)</h3>
+        <div class="axis-row">
+          <div class="axis"><span class="axis-label x">X</span><span id="axX">0.000</span></div>
+          <div class="axis"><span class="axis-label y">Y</span><span id="axY">0.000</span></div>
+          <div class="axis"><span class="axis-label z">Z</span><span id="axZ">0.000</span></div>
+        </div>
+        <div class="bar-wrap">
+          <div class="bar"><div class="bar-fill x" id="barX"></div></div>
+          <div class="bar"><div class="bar-fill y" id="barY"></div></div>
+          <div class="bar"><div class="bar-fill z" id="barZ"></div></div>
+        </div>
+        <p class="magnitude">|a| = <span id="magnitude">0.000</span> g</p>
+      </div>
 
-			<footer class="page-footer"><span>TerraGuard Monitoring System <b>·</b> v1.1.0</span><span>Đồng bộ dữ liệu qua MQTT <span class="footer-live"></span></span></footer>
-		</main>
-	</div>
-	<div class="toast" id="toast"><i data-lucide="check-circle-2"></i><span></span></div>
-	<div class="approval-modal" id="approvalModal" aria-hidden="true">
-		<div class="approval-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalTitle">
-			<div class="panel-heading"><div><div class="eyebrow">Quản trị truy cập</div><h2 id="approvalTitle">Yêu cầu đăng ký</h2></div><button class="icon-button" id="closeApprovalBtn" aria-label="Đóng"><i data-lucide="x"></i></button></div>
-			<p class="approval-empty" id="approvalEmpty">Không có yêu cầu đang chờ duyệt.</p>
-			<ul class="approval-list" id="approvalList"></ul>
-		</div>
-	</div>
-	<script src="https://unpkg.com/lucide@latest"></script><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script><script src="script.js"></script>
+      <div class="card">
+        <h3>Đường nền (baseline)</h3>
+        <div class="axis-row">
+          <div class="axis"><span class="axis-label x">X</span><span id="baseX">0.000</span></div>
+          <div class="axis"><span class="axis-label y">Y</span><span id="baseY">0.000</span></div>
+          <div class="axis"><span class="axis-label z">Z</span><span id="baseZ">0.000</span></div>
+        </div>
+        <p class="note">Baseline là vị trí "đứng yên" ESP32 tự học để so sánh độ lệch.</p>
+      </div>
+
+      <div class="card">
+        <h3>Độ ẩm đất</h3>
+        <div class="metric-row">
+          <div class="metric">
+            <span class="metric-icon">💧</span>
+            <span class="metric-value" id="soilHumidity">-- %</span>
+            <span class="metric-label">Độ ẩm đất</span>
+          </div>
+        </div>
+        <div class="soil-status" id="soilStatus">
+          <span class="soil-dot" id="soilDot"></span>
+          <span id="soilStatusText">Chưa có dữ liệu</span>
+        </div>
+        <div class="threshold-box">
+          <label for="soilThresholdInput">Cảnh báo khi độ ẩm đất vượt</label>
+          <div class="threshold-row">
+            <input type="number" id="soilThresholdInput" min="0" max="100" step="1" value="80">
+            <span>%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Thông tin thiết bị</h3>
+        <ul class="info-list">
+          <li><span>Thiết bị</span><b id="deviceId">--</b></li>
+          <li><span>Topic MQTT</span><b id="topicName">--</b></li>
+          <li><span>Cập nhật lúc</span><b id="lastUpdate">--</b></li>
+          <li><span>Cảnh báo</span><b id="warningFlag">--</b></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>Mực nước (siêu âm AJ-SR04M)</h3>
+        <div class="metric-row">
+          <div class="metric">
+            <span class="metric-icon">📏</span>
+            <span class="metric-value" id="waterDistance">-- cm</span>
+            <span class="metric-label">Khoảng cách đo được</span>
+          </div>
+          <div class="metric">
+            <span class="metric-icon">🌊</span>
+            <span class="metric-value" id="waterLevelChange">-- cm</span>
+            <span class="metric-label" id="waterLevelLabel">Mực nước</span>
+          </div>
+        </div>
+        <div class="threshold-box">
+          <label for="waterThresholdInput">Cảnh báo khi nước dâng vượt</label>
+          <div class="threshold-row">
+            <input type="number" id="waterThresholdInput" min="0" max="200" step="0.5" value="10">
+            <span>cm</span>
+          </div>
+        </div>
+        <div class="baseline-form">
+          <label for="baselineInput">Khoảng cách cố định (cm)</label>
+          <div class="baseline-row">
+            <input type="number" id="baselineInput" min="20" max="450" step="0.5" placeholder="50">
+            <button id="baselineSetBtn">Gửi xuống ESP32</button>
+          </div>
+          <p class="note" id="baselineCurrentNote">Đang dùng trên thiết bị: -- cm</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Biểu đồ lịch sử độ rung -->
+    <section class="card chart-card">
+      <div class="chart-header">
+        <h3>Lịch sử độ rung theo thời gian</h3>
+        <div class="legend">
+          <span class="legend-item"><i class="dot stable"></i>Ổn định</span>
+          <span class="legend-item"><i class="dot warning"></i>Cảnh báo</span>
+          <span class="legend-item"><i class="dot danger"></i>Nguy hiểm</span>
+        </div>
+      </div>
+      <div class="chart-shell">
+        <canvas id="movementChart" height="220"></canvas>
+      </div>
+    </section>
+
+    <!-- Nhật ký sự kiện -->
+    <section class="card log-card">
+      <h3>Nhật ký dữ liệu gần đây</h3>
+      <div class="log-list" id="logList">
+        <p class="log-empty">Chưa có dữ liệu nào được ghi nhận.</p>
+      </div>
+    </section>
+
+    <section class="card map-card">
+      <div class="chart-header">
+        <h3>Vị trí thiết bị</h3>
+        <div class="legend">
+          <span class="legend-item"><i class="dot stable"></i>GPS OK</span>
+        </div>
+      </div>
+      <div id="map" aria-label="Bản đồ vị trí"></div>
+      <div class="gps-meta">
+        <span id="gpsStatus">Chưa có tọa độ GPS</span>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="alertStack" class="alert-stack" aria-live="polite" aria-atomic="true"></div>
+
+  <footer class="footer">
+    Kết nối tới broker <b>broker.hivemq.com</b> qua WebSocket · Topic mặc định: <code>terraguard/sensors/esp32</code>
+  </footer>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="script.js"></script>
 </body>
 </html>

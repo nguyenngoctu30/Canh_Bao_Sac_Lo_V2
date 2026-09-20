@@ -1,433 +1,552 @@
-const $ = (selector) => document.querySelector(selector);
-const randomBetween = (min, max, decimals = 1) => Number((Math.random() * (max - min) + min).toFixed(decimals));
+// ================== CẤU HÌNH ==================
+// Cho phép đổi topic bằng query string: index.html?topic=terraguard/sensors/esp32
+const params = new URLSearchParams(window.location.search);
 
-const appShell = $('#appShell');
-const sidebarCollapsed = localStorage.getItem('terraguard-sidebar-collapsed') === 'true';
-if (sidebarCollapsed) appShell.classList.add('sidebar-collapsed');
+const MQTT_HOST = "broker.hivemq.com";
+const MQTT_WS_PORT = 8884;          // cổng WebSocket-SSL công khai của HiveMQ
+const MQTT_TOPIC = params.get("topic") || "terraguard/sensors/esp32";
+const MQTT_CONFIG_TOPIC = params.get("configTopic") || "terraguard/config/esp32/baseline_distance";
 
-function updateSidebarToggle() {
-	const collapsed = appShell.classList.toggle('sidebar-collapsed');
-	localStorage.setItem('terraguard-sidebar-collapsed', collapsed);
-	setSidebarToggleState(collapsed);
+// Ngưỡng phân loại độ rung (phải khớp với mã ESP32)
+const MOVEMENT_WARNING = 0.5;
+const MOVEMENT_DANGER = 2.0;
+
+const MAX_LOG_ITEMS = 30;
+const MAX_CHART_POINTS = 60;
+
+// ================== DOM ==================
+const connDot = document.getElementById("connDot");
+const connText = document.getElementById("connText");
+
+const stateBanner = document.getElementById("stateBanner");
+const stateIcon = document.getElementById("stateIcon");
+const stateLabel = document.getElementById("stateLabel");
+const stateDesc = document.getElementById("stateDesc");
+const movementValue = document.getElementById("movementValue");
+const movementKpiEl = document.getElementById("movementKpi");
+
+const axX = document.getElementById("axX");
+const axY = document.getElementById("axY");
+const axZ = document.getElementById("axZ");
+const barX = document.getElementById("barX");
+const barY = document.getElementById("barY");
+const barZ = document.getElementById("barZ");
+const magnitudeEl = document.getElementById("magnitude");
+
+const baseX = document.getElementById("baseX");
+const baseY = document.getElementById("baseY");
+const baseZ = document.getElementById("baseZ");
+
+const soilHumidityEl = document.getElementById("soilHumidity");
+const soilHumidityKpiEl = document.getElementById("soilHumidityKpi");
+const soilKpiNoteEl = document.getElementById("soilKpiNote");
+const soilStatus = document.getElementById("soilStatus");
+const soilDot = document.getElementById("soilDot");
+const soilStatusText = document.getElementById("soilStatusText");
+
+// Mực nước (siêu âm)
+const waterDistanceEl = document.getElementById("waterDistance");
+const waterDistanceKpiEl = document.getElementById("waterDistanceKpi");
+const waterKpiNoteEl = document.getElementById("waterKpiNote");
+const waterLevelChangeEl = document.getElementById("waterLevelChange");
+const waterLevelLabel = document.getElementById("waterLevelLabel");
+const baselineInput = document.getElementById("baselineInput");
+const baselineSetBtn = document.getElementById("baselineSetBtn");
+const baselineCurrentNote = document.getElementById("baselineCurrentNote");
+
+// Ngưỡng phân loại độ ẩm đất — chỉnh lại cho phù hợp loại cây / loại đất của bạn
+const SOIL_DRY_MAX = 30;   // dưới mức này: đất khô, cần tưới
+const SOIL_WET_MIN = 80;   // trên mức này: đất quá ướt / ngập úng
+const DEFAULT_SOIL_WARNING_THRESHOLD = 80;
+const DEFAULT_WATER_WARNING_THRESHOLD = 10;
+
+const soilThresholdInput = document.getElementById("soilThresholdInput");
+const waterThresholdInput = document.getElementById("waterThresholdInput");
+
+const deviceIdEl = document.getElementById("deviceId");
+const topicNameEl = document.getElementById("topicName");
+const lastUpdateEl = document.getElementById("lastUpdate");
+const warningFlagEl = document.getElementById("warningFlag");
+
+const logList = document.getElementById("logList");
+const canvas = document.getElementById("movementChart");
+const ctx = canvas.getContext("2d");
+const alertStack = document.getElementById("alertStack");
+const gpsStatusEl = document.getElementById("gpsStatus");
+
+const alertCooldowns = new Map();
+let gpsMap = null;
+let gpsMarker = null;
+let gpsCircle = null;
+
+topicNameEl.textContent = MQTT_TOPIC;
+
+function initMap() {
+  const mapEl = document.getElementById("map");
+  if (!mapEl) {
+    console.warn("Map container not found; skipping Leaflet init.");
+    return;
+  }
+
+  gpsMap = L.map(mapEl, { zoomControl: true }).setView([10.762622, 106.660172], 13);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(gpsMap);
+
+  gpsMarker = L.marker([0, 0]).addTo(gpsMap);
+  gpsMarker.bindPopup("Vị trí thiết bị");
+
+  gpsCircle = L.circle([0, 0], {
+    radius: 20,
+    color: "#38bdf8",
+    fillColor: "#38bdf8",
+    fillOpacity: 0.2,
+    weight: 2
+  }).addTo(gpsMap);
 }
 
-function setSidebarToggleState(collapsed) {
-	const toggle = $('#sidebarToggle');
-	toggle.setAttribute('aria-label', collapsed ? 'Hiện thanh bên' : 'Ẩn thanh bên');
-	toggle.title = collapsed ? 'Hiện thanh bên' : 'Ẩn thanh bên';
-	toggle.innerHTML = `<i data-lucide="${collapsed ? 'panel-left-open' : 'panel-left-close'}"></i>`;
-	lucide.createIcons();
+function updateGpsMap(lat, lon) {
+  if (!gpsMap) return;
+  const position = [lat, lon];
+  gpsMarker.setLatLng(position);
+  gpsCircle.setLatLng(position);
+  gpsMap.setView(position, Math.max(gpsMap.getZoom(), 15));
+  gpsMarker.bindPopup(`Vị trí thiết bị<br>${lat.toFixed(5)}, ${lon.toFixed(5)}`);
+  gpsStatusEl.textContent = `Tọa độ: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 }
 
-setSidebarToggleState(sidebarCollapsed);
-$('#sidebarToggle').addEventListener('click', updateSidebarToggle);
+initMap();
 
-const DEFAULT_LOCATION = { latitude: 12.211889, longitude: 108.704333, label: 'Đèo Khánh Lê' };
-const weatherDescriptions = {
-	0: ['Trời quang', 'sun'], 1: ['Ít mây', 'cloud-sun'], 2: ['Mây rải rác', 'cloud-sun'], 3: ['Nhiều mây', 'cloud'],
-	45: ['Sương mù', 'cloud-fog'], 48: ['Sương mù đóng băng', 'cloud-fog'], 51: ['Mưa phùn nhẹ', 'cloud-drizzle'], 53: ['Mưa phùn', 'cloud-drizzle'], 55: ['Mưa phùn dày', 'cloud-drizzle'],
-	61: ['Mưa nhẹ', 'cloud-rain'], 63: ['Mưa vừa', 'cloud-rain'], 65: ['Mưa lớn', 'cloud-rain'], 71: ['Tuyết nhẹ', 'snowflake'], 73: ['Tuyết', 'snowflake'], 75: ['Tuyết lớn', 'snowflake'],
-	80: ['Mưa rào nhẹ', 'cloud-rain-wind'], 81: ['Mưa rào', 'cloud-rain-wind'], 82: ['Mưa rào lớn', 'cloud-rain-wind'], 95: ['Dông', 'cloud-lightning'], 96: ['Dông có mưa đá', 'cloud-lightning'], 99: ['Dông mạnh', 'cloud-lightning']
+// ================== TRẠNG THÁI ==================
+let history = []; // { t: Date, movement: number, state: string }
+let mqttClientRef = null;
+let motionWarningState = false;
+let soilWarningState = false;
+let waterWarningState = false;
+let lastSoilHumidity = null;
+let lastWaterLevel = { valid: false, distanceCm: 0, levelChangeCm: 0, baselineDistanceCm: 0 };
+
+function getSoilWarningThreshold() {
+  const value = Number.parseFloat(soilThresholdInput.value);
+  if (!Number.isFinite(value)) return DEFAULT_SOIL_WARNING_THRESHOLD;
+  return Math.min(100, Math.max(0, value));
+}
+
+function getWaterWarningThreshold() {
+  const value = Number.parseFloat(waterThresholdInput.value);
+  if (!Number.isFinite(value)) return DEFAULT_WATER_WARNING_THRESHOLD;
+  return Math.max(0, value);
+}
+
+function updateWarningSummary() {
+  warningFlagEl.textContent = motionWarningState || soilWarningState || waterWarningState ? "CÓ" : "Không";
+}
+
+function triggerReloadEffect() {
+  document.body.classList.remove("reloading");
+  void document.body.offsetWidth;
+  document.body.classList.add("reloading");
+  clearTimeout(triggerReloadEffect.timer);
+  triggerReloadEffect.timer = setTimeout(() => {
+    document.body.classList.remove("reloading");
+  }, 650);
+}
+
+// ================== KẾT NỐI MQTT ==================
+function connectMQTT() {
+  const url = `wss://${MQTT_HOST}:${MQTT_WS_PORT}/mqtt`;
+  const clientId = "terraguard-web-" + Math.random().toString(16).slice(2, 10);
+
+  setConnStatus("connecting", `Đang kết nối tới ${MQTT_HOST}...`);
+
+  const client = mqtt.connect(url, {
+    clientId,
+    clean: true,
+    reconnectPeriod: 3000,
+    connectTimeout: 8000,
+  });
+  mqttClientRef = client;
+
+  client.on("connect", () => {
+    console.log("[MQTT] Đã connect broker, clientId =", clientId);
+    setConnStatus("connected", `Đang subscribe "${MQTT_TOPIC}"...`);
+    client.subscribe(MQTT_TOPIC, { qos: 0 }, (err, granted) => {
+      if (err) {
+        console.error("[MQTT] Subscribe lỗi:", err);
+        setConnStatus("error", "Lỗi khi subscribe topic");
+      } else {
+        console.log("[MQTT] Subscribe thành công:", granted);
+        setConnStatus("connected", `Đã kết nối · lắng nghe "${MQTT_TOPIC}"`);
+      }
+    });
+  });
+
+  client.on("reconnect", () => {
+    setConnStatus("connecting", "Mất kết nối, đang thử lại...");
+  });
+
+  client.on("error", (err) => {
+    console.error("MQTT error:", err);
+    setConnStatus("error", "Lỗi kết nối MQTT");
+  });
+
+  client.on("close", () => {
+    setConnStatus("error", "Kết nối MQTT đã đóng");
+  });
+
+  client.on("message", (topic, payload) => {
+    console.log("[MQTT] Nhận message trên topic:", topic, "| raw:", payload.toString());
+    try {
+      const data = JSON.parse(payload.toString());
+      handleSensorData(data);
+    } catch (e) {
+      console.error("[MQTT] Không parse được payload JSON:", payload.toString(), e);
+    }
+  });
+}
+
+function setConnStatus(kind, text) {
+  connDot.classList.remove("connected", "error");
+  if (kind === "connected") connDot.classList.add("connected");
+  if (kind === "error") connDot.classList.add("error");
+  connText.textContent = text;
+}
+
+// ================== XỬ LÝ DỮ LIỆU ==================
+function handleSensorData(data) {
+  const a = data.adxl345 || {};
+  const hasAxes = typeof a.x === "number";
+
+  // Thiết bị & thời gian
+  deviceIdEl.textContent = data.device || "--";
+  lastUpdateEl.textContent = new Date().toLocaleTimeString("vi-VN");
+
+  // Trục gia tốc
+  if (hasAxes) {
+    axX.textContent = a.x.toFixed(3);
+    axY.textContent = a.y.toFixed(3);
+    axZ.textContent = a.z.toFixed(3);
+    magnitudeEl.textContent = (a.magnitude ?? Math.sqrt(a.x ** 2 + a.y ** 2 + a.z ** 2)).toFixed(3);
+
+    // Thanh trực quan: quy đổi -2g..+2g -> 0..100%
+    barX.style.width = axisToPercent(a.x) + "%";
+    barY.style.width = axisToPercent(a.y) + "%";
+    barZ.style.width = axisToPercent(a.z) + "%";
+
+    if (a.baseline) {
+      baseX.textContent = a.baseline.x.toFixed(3);
+      baseY.textContent = a.baseline.y.toFixed(3);
+      baseZ.textContent = a.baseline.z.toFixed(3);
+    }
+  }
+
+  // Độ ẩm đất
+  if (typeof data.soilHumidity === "number") {
+    lastSoilHumidity = data.soilHumidity;
+    soilHumidityEl.textContent = data.soilHumidity.toFixed(1) + " %";
+    soilHumidityKpiEl.textContent = data.soilHumidity.toFixed(1) + " %";
+    updateSoilStatus(data.soilHumidity);
+  }
+
+  // Mực nước (siêu âm AJ-SR04M)
+  if (data.waterLevel) {
+    lastWaterLevel = data.waterLevel;
+    updateWaterLevel(data.waterLevel);
+  }
+
+  if (data.gps && typeof data.gps.lat === "number" && typeof data.gps.lon === "number") {
+    const gpsLat = Number(data.gps.lat);
+    const gpsLon = Number(data.gps.lon);
+    if (Number.isFinite(gpsLat) && Number.isFinite(gpsLon)) {
+      updateGpsMap(gpsLat, gpsLon);
+    }
+  }
+
+  // Mức rung & trạng thái
+  const movement = typeof data.movement === "number" ? data.movement : 0;
+  const state = data.motionState || classifyMovement(movement);
+  motionWarningState = data.warning ?? state !== "stable";
+
+  triggerReloadEffect();
+  movementValue.textContent = movement.toFixed(2);
+  movementKpiEl.textContent = movement.toFixed(2);
+  updateWarningSummary();
+
+  updateStateBanner(state, movement);
+  pushHistory(movement, state);
+  addLogLine(movement, state);
+  drawChart();
+}
+
+function updateSoilStatus(humidity) {
+  const threshold = getSoilWarningThreshold();
+  soilStatus.classList.remove("dry", "good", "wet");
+  if (humidity < SOIL_DRY_MAX) {
+    soilStatus.classList.add("dry");
+    soilStatusText.textContent = `Đất khô (${humidity.toFixed(1)}%) — nên tưới nước`;
+    soilKpiNoteEl.textContent = "Khô - cần tưới";
+    soilWarningState = false;
+  } else if (humidity >= threshold) {
+    soilStatus.classList.add("wet");
+    soilStatusText.textContent = `CẢNH BÁO: độ ẩm vượt ngưỡng (${humidity.toFixed(1)}% > ${threshold.toFixed(0)}%)`;
+    soilKpiNoteEl.textContent = "Cảnh báo vượt ngưỡng";
+    soilWarningState = true;
+    showAlert({
+      type: "danger",
+      title: "Cảnh báo độ ẩm vượt ngưỡng",
+      message: `Độ ẩm hiện tại ${humidity.toFixed(1)}% vượt ngưỡng ${threshold.toFixed(0)}%.`,
+      key: "soil-warning"
+    });
+  } else if (humidity > SOIL_WET_MIN) {
+    soilStatus.classList.add("wet");
+    soilStatusText.textContent = `Đất quá ướt (${humidity.toFixed(1)}%) — có thể ngập úng`;
+    soilKpiNoteEl.textContent = "Quá ướt";
+    soilWarningState = false;
+  } else {
+    soilStatus.classList.add("good");
+    soilStatusText.textContent = `Độ ẩm tốt (${humidity.toFixed(1)}%)`;
+    soilKpiNoteEl.textContent = "Ổn định";
+    soilWarningState = false;
+  }
+  updateWarningSummary();
+}
+
+function updateWaterLevel(wl) {
+  const threshold = getWaterWarningThreshold();
+
+  if (!wl.valid) {
+    waterDistanceEl.textContent = "Lỗi đọc";
+    waterLevelChangeEl.textContent = "--";
+    waterLevelLabel.textContent = "Mực nước (cảm biến ngoài tầm/lỗi dây)";
+    waterLevelChangeEl.style.color = "var(--text-dim)";
+    waterWarningState = false;
+    updateWarningSummary();
+    return;
+  }
+
+  waterDistanceEl.textContent = wl.distanceCm.toFixed(1) + " cm";
+  waterDistanceKpiEl.textContent = wl.distanceCm.toFixed(1) + " cm";
+
+  const change = wl.levelChangeCm;
+  const sign = change >= 0 ? "+" : "";
+  const isWarning = change > 0 && change >= threshold;
+
+  waterLevelChangeEl.textContent = `${sign}${change.toFixed(1)} cm`;
+  waterLevelLabel.textContent = change >= 0 ? "Mực nước đã DÂNG" : "Mực nước đã HẠ";
+  waterLevelChangeEl.style.color = isWarning ? "var(--danger)" : change >= 0 ? "var(--warning)" : "var(--accent)";
+  if (isWarning) {
+    waterLevelLabel.textContent = `Mực nước DÂNG quá ngưỡng (${change.toFixed(1)} cm > ${threshold.toFixed(1)} cm)`;
+    waterKpiNoteEl.textContent = "Cảnh báo dâng nước";
+    waterWarningState = true;
+    showAlert({
+      type: "danger",
+      title: "Cảnh báo mực nước dâng",
+      message: `Mực nước tăng ${change.toFixed(1)} cm, vượt ngưỡng ${threshold.toFixed(1)} cm.`,
+      key: "water-warning"
+    });
+  } else {
+    waterKpiNoteEl.textContent = change >= 0 ? "Đang dâng" : "Ổn định";
+    waterWarningState = false;
+  }
+
+  // Chỉ cập nhật placeholder/ghi chú, không ghi đè ô input nếu người dùng đang gõ dở
+  baselineCurrentNote.textContent = `Đang dùng trên thiết bị: ${wl.baselineDistanceCm.toFixed(1)} cm`;
+  if (document.activeElement !== baselineInput && !baselineInput.value) {
+    baselineInput.placeholder = wl.baselineDistanceCm.toFixed(1);
+  }
+
+  updateWarningSummary();
+}
+
+soilThresholdInput.addEventListener("input", () => {
+  if (lastSoilHumidity !== null) {
+    updateSoilStatus(lastSoilHumidity);
+  }
+});
+
+waterThresholdInput.addEventListener("input", () => {
+  if (lastWaterLevel.valid) {
+    updateWaterLevel(lastWaterLevel);
+  }
+});
+
+baselineSetBtn.addEventListener("click", () => {
+  const value = parseFloat(baselineInput.value);
+  if (isNaN(value) || value <= 0) {
+    alert("Vui lòng nhập một khoảng cách hợp lệ (cm), ví dụ: 50");
+    return;
+  }
+  if (!mqttClientRef || !mqttClientRef.connected) {
+    alert("Chưa kết nối MQTT, không thể gửi xuống ESP32 lúc này.");
+    return;
+  }
+
+  // retain: true để nếu ESP32 đang mất kết nối / khởi động lại sau, vẫn nhận
+  // được giá trị mới nhất ngay khi subscribe lại, không cần web phải mở sẵn.
+  mqttClientRef.publish(MQTT_CONFIG_TOPIC, value.toString(), { retain: true, qos: 0 }, (err) => {
+    if (err) {
+      alert("Gửi thất bại: " + err.message);
+    } else {
+      baselineCurrentNote.textContent = `Đã gửi ${value} cm xuống ESP32 — chờ thiết bị xác nhận...`;
+    }
+  });
+});
+
+function classifyMovement(movement) {
+  if (movement < MOVEMENT_WARNING) return "stable";
+  if (movement < MOVEMENT_DANGER) return "warning";
+  return "danger";
+}
+
+function axisToPercent(g) {
+  // g trong khoảng [-2, 2] -> phần trăm chiều rộng thanh [0, 100]
+  const clamped = Math.max(-2, Math.min(2, g));
+  return ((clamped + 2) / 4) * 100;
+}
+
+const STATE_META = {
+  stable: { icon: "✅", label: "Đất ổn định", desc: "Không phát hiện rung động bất thường." },
+  warning: { icon: "⚠️", label: "Cảnh báo rung nhẹ", desc: "Phát hiện rung động — theo dõi thêm." },
+  danger: { icon: "🚨", label: "NGUY HIỂM: rung mạnh", desc: "Rung động vượt ngưỡng an toàn! Kiểm tra ngay khu vực." },
 };
 
-function getWeatherIcon(code, isNight, windSpeed) {
-	if (windSpeed >= 28) return 'wind';
-	const weather = weatherDescriptions[code] || ['Thời tiết thay đổi', 'cloud'];
-	return isNight && code <= 3 ? 'moon' : weather[1];
+function showAlert({ type = "danger", title, message, key }) {
+  const now = Date.now();
+  if (key && alertCooldowns.get(key) && now - alertCooldowns.get(key) < 6000) {
+    return;
+  }
+  if (key) alertCooldowns.set(key, now);
+
+  const toast = document.createElement("div");
+  toast.className = `alert-toast ${type}`;
+  toast.innerHTML = `
+    <div class="alert-icon">${type === "warning" ? "⚠️" : type === "info" ? "ℹ️" : "🚨"}</div>
+    <div class="alert-text">
+      <p class="alert-title">${title}</p>
+      <p class="alert-message">${message}</p>
+    </div>
+    <button class="alert-close" aria-label="Đóng cảnh báo">×</button>
+  `;
+
+  const closeBtn = toast.querySelector(".alert-close");
+  closeBtn.addEventListener("click", () => {
+    toast.remove();
+  });
+
+  alertStack.appendChild(toast);
+
+  setTimeout(() => {
+    toast.remove();
+  }, 5000);
 }
 
-function renderForecast(weather) {
-	const row = $('#forecastRow');
-	row.innerHTML = weather.daily.time.map((date, index) => {
-		const code = weather.daily.weather_code[index];
-		const icon = getWeatherIcon(code, false, weather.daily.wind_speed_10m_max[index]);
-		const day = new Date(`${date}T12:00:00`).toLocaleDateString('vi-VN', { weekday: 'short' }).replace('.', '').toUpperCase();
-		return `<div><small>${day}</small><i data-lucide="${icon}"></i><strong>${Math.round(weather.daily.temperature_2m_max[index])}° / ${Math.round(weather.daily.temperature_2m_min[index])}°</strong><em>${Math.round(weather.daily.precipitation_probability_max[index])}%</em></div>`;
-	}).join('');
-	lucide.createIcons();
+function updateStateBanner(state, movement) {
+  const meta = STATE_META[state] || STATE_META.stable;
+  stateBanner.classList.remove("stable", "warning", "danger");
+  stateBanner.classList.add(state);
+  document.body.classList.remove("danger-mode");
+  if (state === "danger") {
+    document.body.classList.add("danger-mode");
+    showAlert({
+      type: "danger",
+      title: "Rung động mạnh",
+      message: `Mức rung hiện tại ${movement.toFixed(2)} vượt ngưỡng nguy hiểm.`,
+      key: "motion-danger"
+    });
+  } else if (state === "warning") {
+    showAlert({
+      type: "warning",
+      title: "Cảnh báo rung nhẹ",
+      message: `Mức rung đang ở ${movement.toFixed(2)}, cần theo dõi.`,
+      key: "motion-warning"
+    });
+  }
+  stateIcon.textContent = meta.icon;
+  stateLabel.textContent = meta.label;
+  stateDesc.textContent = meta.desc;
 }
 
-function applyWeatherTheme(code, isNight, windSpeed) {
-	const theme = windSpeed >= 28 ? 'wind' : isNight ? 'night' : code >= 51 ? 'rain' : code <= 2 ? 'sunny' : 'cloudy';
-	document.body.dataset.weatherTheme = theme;
+function pushHistory(movement, state) {
+  history.push({ t: new Date(), movement, state });
+  if (history.length > MAX_CHART_POINTS) history.shift();
 }
 
-async function loadWeather(location = DEFAULT_LOCATION) {
-	const params = new URLSearchParams({ latitude: location.latitude, longitude: location.longitude, current: 'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,is_day', daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max', timezone: 'auto', forecast_days: 5 });
-	try {
-		const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
-		if (!response.ok) throw new Error('Weather request failed');
-		const weather = await response.json();
-		const current = weather.current;
-		const description = weatherDescriptions[current.weather_code]?.[0] || 'Thời tiết thay đổi';
-		$('#weatherLocation').textContent = location.label || `Vị trí ${location.latitude.toFixed(3)}, ${location.longitude.toFixed(3)}`;
-		$('#weatherSource').textContent = `Open-Meteo · ${weather.timezone}`;
-		$('#weatherTemperature').textContent = `${Math.round(current.temperature_2m)}°`;
-		$('#weatherDescription').textContent = description;
-		$('#weatherFeels').textContent = `${Math.round(current.apparent_temperature)}°`;
-		$('#weatherHumidity').textContent = `${Math.round(current.relative_humidity_2m)}%`;
-		$('#weatherWind').textContent = `${Math.round(current.wind_speed_10m)} km/h`;
-		$('#weatherIcon').setAttribute('data-lucide', getWeatherIcon(current.weather_code, current.is_day === 0, current.wind_speed_10m));
-		applyWeatherTheme(current.weather_code, current.is_day === 0, current.wind_speed_10m);
-		renderForecast(weather);
-		lucide.createIcons();
-	} catch (error) {
-		$('#weatherSource').textContent = 'Không thể tải dữ liệu thời tiết';
-	}
+function addLogLine(movement, state) {
+  if (logList.querySelector(".log-empty")) logList.innerHTML = "";
+
+  const line = document.createElement("div");
+  line.className = `log-line ${state}`;
+  const time = new Date().toLocaleTimeString("vi-VN");
+  line.innerHTML = `<span class="tag">${state.toUpperCase()}</span><span>${time} — mức rung: ${movement.toFixed(2)}</span>`;
+  logList.prepend(line);
+
+  while (logList.children.length > MAX_LOG_ITEMS) {
+    logList.removeChild(logList.lastChild);
+  }
 }
 
-function initWeather() {
-	if (!navigator.geolocation) return loadWeather();
-	navigator.geolocation.getCurrentPosition(
-		(position) => loadWeather({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
-		() => loadWeather()
-	);
+// ================== VẼ BIỂU ĐỒ (canvas thuần) ==================
+const STATE_COLOR = { stable: "#34d399", warning: "#fbbf24", danger: "#f87171" };
+
+function drawChart() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || canvas.parentElement.clientWidth;
+  const cssHeight = canvas.height;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  if (history.length === 0) return;
+
+  const maxVal = Math.max(MOVEMENT_DANGER * 1.2, ...history.map((h) => h.movement));
+  const padding = 10;
+  const w = cssWidth - padding * 2;
+  const h = cssHeight - padding * 2;
+
+  // Đường ngưỡng
+  drawThresholdLine(MOVEMENT_WARNING, maxVal, padding, w, h, "#fbbf24");
+  drawThresholdLine(MOVEMENT_DANGER, maxVal, padding, w, h, "#f87171");
+
+  // Đường dữ liệu
+  ctx.beginPath();
+  history.forEach((point, i) => {
+    const x = padding + (i / Math.max(1, MAX_CHART_POINTS - 1)) * w;
+    const y = padding + h - (point.movement / maxVal) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#4fd1c5";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Chấm điểm theo màu trạng thái
+  history.forEach((point, i) => {
+    const x = padding + (i / Math.max(1, MAX_CHART_POINTS - 1)) * w;
+    const y = padding + h - (point.movement / maxVal) * h;
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = STATE_COLOR[point.state] || "#4fd1c5";
+    ctx.fill();
+  });
 }
 
-const firebaseConfig = {
-	apiKey: 'AIzaSyDzQFoQ8R023siAj2qaKVneQHu_BII1Zlc',
-	authDomain: 'tuiot-ad770.firebaseapp.com',
-	databaseURL: 'https://tuiot-ad770-default-rtdb.asia-southeast1.firebasedatabase.app',
-	projectId: 'tuiot-ad770',
-	storageBucket: 'tuiot-ad770.firebasestorage.app',
-	messagingSenderId: '174269480706',
-	appId: '1:174269480706:web:96cbe14c0680f9f7c34c1b',
-	measurementId: 'G-S1XNWLX6EY'
-};
-
-firebase.initializeApp(firebaseConfig);
-const auth = firebase.auth();
-const database = firebase.database();
-let currentUser;
-let isAdmin = false;
-let authMode = 'login';
-let registrationInProgress = false;
-let pendingRequestsRef;
-const ADMIN_EMAIL = 'tu7786110@gmail.com';
-
-const authErrorMessage = (error) => ({
-	'AUTH/INVALID-CREDENTIALS': 'Email hoặc mật khẩu không đúng',
-	'auth/invalid-credential': 'Email hoặc mật khẩu không đúng',
-	'auth/email-already-in-use': 'Email này đã được sử dụng',
-	'auth/invalid-email': 'Email không hợp lệ',
-	'auth/weak-password': 'Mật khẩu cần có ít nhất 6 ký tự'
-}[error.code] || 'Không thể xác thực. Vui lòng thử lại.');
-
-function setAuthMode(mode) {
-	authMode = mode;
-	const registering = mode === 'register';
-	$('#authTitle').textContent = registering ? 'Tạo tài khoản' : 'Đăng nhập hệ thống';
-	$('#authSubmit').innerHTML = `<i data-lucide="${registering ? 'user-plus' : 'log-in'}"></i>${registering ? 'Đăng ký' : 'Đăng nhập'}`;
-	$('#authSwitch').textContent = registering ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký';
-	$('#authPassword').setAttribute('autocomplete', registering ? 'new-password' : 'current-password');
-	lucide.createIcons();
+function drawThresholdLine(value, maxVal, padding, w, h, color) {
+  const y = padding + h - (value / maxVal) * h;
+  ctx.beginPath();
+  ctx.setLineDash([4, 4]);
+  ctx.moveTo(padding, y);
+  ctx.lineTo(padding + w, y);
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
 }
 
-function setAdminControls(enabled) {
-	isAdmin = enabled;
-	document.querySelectorAll('#thresholdForm input, #thresholdForm button, #phoneForm input, #phoneForm button').forEach((control) => { control.disabled = !enabled; });
-	$('#settingsRole').textContent = enabled ? 'Quyền admin · Có thể chỉnh sửa' : 'Quyền xem · Chỉ admin mới được chỉnh sửa';
-	$('#settingsRole').classList.toggle('admin', enabled);
-}
+window.addEventListener("resize", drawChart);
 
-function renderPhoneList(phoneNumbers = {}) {
-	const list = $('#phoneList');
-	list.innerHTML = '';
-	Object.entries(phoneNumbers).forEach(([key, phone]) => {
-		const item = document.createElement('li');
-		item.innerHTML = `<span>${phone}</span><button type="button" data-phone-key="${key}" aria-label="Xóa số ${phone}"><i data-lucide="trash-2"></i></button>`;
-		list.appendChild(item);
-	});
-	lucide.createIcons();
-}
-
-function showApprovalModal() {
-	if (!isAdmin) return;
-	$('#approvalModal').classList.add('is-open');
-	$('#approvalModal').setAttribute('aria-hidden', 'false');
-	loadAccessRequests();
-}
-
-async function loadAccessRequests() {
-	const list = $('#approvalList');
-	list.innerHTML = '';
-	try {
-		const snapshot = await database.ref('accessRequests').orderByChild('status').equalTo('pending').once('value');
-		const requests = snapshot.val() || {};
-		const entries = Object.entries(requests);
-		$('#approvalEmpty').hidden = entries.length > 0;
-		entries.forEach(([uid, request]) => {
-			const item = document.createElement('li');
-			item.innerHTML = `<div><strong>${request.email}</strong><small>Đăng ký lúc ${request.createdAt ? new Date(request.createdAt).toLocaleString('vi-VN') : 'chưa rõ'}</small></div><span><button type="button" class="approve-button" data-approval="approve" data-uid="${uid}">Duyệt</button><button type="button" class="reject-button" data-approval="reject" data-uid="${uid}">Từ chối</button></span>`;
-			list.appendChild(item);
-		});
-	} catch (error) {
-		$('#approvalEmpty').hidden = false;
-		$('#approvalEmpty').textContent = 'Không thể tải yêu cầu. Kiểm tra Firebase Rules.';
-	}
-}
-
-function watchPendingRequests(enabled) {
-	if (pendingRequestsRef) pendingRequestsRef.off();
-	pendingRequestsRef = null;
-	const badge = $('#notificationBtn b');
-	badge.hidden = !enabled;
-	if (!enabled) return;
-	pendingRequestsRef = database.ref('accessRequests');
-	pendingRequestsRef.on('value', (snapshot) => {
-		const requests = snapshot.val() || {};
-		const count = Object.values(requests).filter((request) => request.status === 'pending').length;
-		badge.textContent = count > 9 ? '9+' : count;
-		badge.hidden = count === 0;
-		$('#notificationBtn').title = count ? `${count} yêu cầu đăng ký chờ duyệt` : 'Không có yêu cầu đăng ký mới';
-	});
-}
-
-async function updateAccessRequest(uid, decision) {
-	if (!isAdmin) return;
-	try {
-		const updates = { [`accessRequests/${uid}/status`]: decision, [`accessRequests/${uid}/reviewedAt`]: firebase.database.ServerValue.TIMESTAMP };
-		if (decision === 'approved') updates[`users/${uid}/role`] = 'user';
-		await database.ref().update(updates);
-		showToast(decision === 'approved' ? 'Đã duyệt tài khoản' : 'Đã từ chối tài khoản', decision === 'approved' ? 'check' : 'x-circle');
-		loadAccessRequests();
-	} catch (error) {
-		showToast('Không thể cập nhật yêu cầu', 'triangle-alert');
-	}
-}
-
-async function loadSettings() {
-	try {
-		const snapshot = await database.ref('settings').once('value');
-		const settings = snapshot.val() || {};
-		if (settings.alertThreshold !== undefined) $('#thresholdValue').value = settings.alertThreshold;
-		renderPhoneList(settings.phoneNumbers || {});
-		$('#thresholdStatus').textContent = 'Đã tải cấu hình từ Firebase';
-	} catch (error) {
-		$('#thresholdStatus').textContent = 'Không thể tải cấu hình từ Firebase';
-	}
-}
-
-auth.onAuthStateChanged(async (user) => {
-	currentUser = user;
-	if (!user) {
-		watchPendingRequests(false);
-		$('#appShell').classList.add('auth-hidden');
-		$('#authScreen').classList.remove('is-hidden');
-		return;
-	}
-	if (registrationInProgress) return;
-	if (user.email?.toLowerCase() !== ADMIN_EMAIL) {
-		const requestSnapshot = await database.ref(`accessRequests/${user.uid}`).once('value');
-		const request = requestSnapshot.val();
-		if (!request || request.status !== 'approved') {
-			await auth.signOut();
-			$('#authError').textContent = request?.status === 'rejected' ? 'Yêu cầu đăng ký đã bị từ chối.' : 'Tài khoản đang chờ admin duyệt.';
-			return;
-		}
-	}
-	$('#authScreen').classList.add('is-hidden');
-	$('#appShell').classList.remove('auth-hidden');
-	$('#userRole').textContent = user.email?.toLowerCase() === ADMIN_EMAIL ? 'ADMIN' : user.email;
-	try {
-		const roleSnapshot = await database.ref(`users/${user.uid}/role`).once('value');
-		setAdminControls(user.email?.toLowerCase() === ADMIN_EMAIL || roleSnapshot.val() === 'admin');
-		watchPendingRequests(isAdmin);
-	} catch (error) {
-		setAdminControls(false);
-		watchPendingRequests(false);
-	}
-	loadSettings();
-});
-
-$('#authSwitch').addEventListener('click', () => setAuthMode(authMode === 'login' ? 'register' : 'login'));
-$('#authForm').addEventListener('submit', async (event) => {
-	event.preventDefault();
-	const email = $('#authEmail').value.trim();
-	const password = $('#authPassword').value;
-	$('#authError').textContent = '';
-	$('#authSubmit').disabled = true;
-	try {
-		if (authMode === 'register') {
-			registrationInProgress = true;
-			const credential = await auth.createUserWithEmailAndPassword(email, password);
-			await database.ref(`accessRequests/${credential.user.uid}`).set({ email, status: 'pending', createdAt: firebase.database.ServerValue.TIMESTAMP });
-			await auth.signOut();
-			registrationInProgress = false;
-			$('#authError').textContent = 'Đăng ký thành công. Vui lòng chờ admin duyệt tài khoản.';
-		} 
-		else await auth.signInWithEmailAndPassword(email, password);
-	} catch (error) {
-		registrationInProgress = false;
-		$('#authError').textContent = authErrorMessage(error);
-	} finally {
-		$('#authSubmit').disabled = false;
-	}
-});
-$('#logoutBtn').addEventListener('click', () => auth.signOut());
-$('#notificationBtn').addEventListener('click', showApprovalModal);
-$('#closeApprovalBtn').addEventListener('click', () => { $('#approvalModal').classList.remove('is-open'); $('#approvalModal').setAttribute('aria-hidden', 'true'); });
-$('#approvalList').addEventListener('click', (event) => {
-	const button = event.target.closest('[data-approval]');
-	if (button) updateAccessRequest(button.dataset.uid, button.dataset.approval === 'approve' ? 'approved' : 'rejected');
-});
-
-const screenTitles = { overview: 'Tổng quan', sensors: 'Dữ liệu cảm biến', alerts: 'Cảnh báo', weather: 'Dự báo thời tiết', location: 'Vị trí & bản đồ', settings: 'Cấu hình hệ thống' };
-const GAUGE_CIRCUMFERENCE = 169.65;
-
-let stationMap;
-function initStationMap() {
-	if (stationMap || !window.L) return;
-	stationMap = L.map('stationMap', { zoomControl: true }).setView([12.211889, 108.704333], 14);
-	L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(stationMap);
-	const marker = L.marker([12.211889, 108.704333]).addTo(stationMap);
-	marker.bindPopup('<strong>Trạm TG-042</strong><br>Đèo Khánh Lê, Khánh Hòa').openPopup();
-}
-
-function switchScreen(screen) {
-	document.querySelectorAll('.screen-item').forEach((item) => item.classList.toggle('is-active', item.dataset.screens.split(' ').includes(screen)));
-	document.querySelectorAll('.content-grid, .bottom-grid').forEach((group) => group.classList.toggle('is-empty', !group.querySelector('.screen-item.is-active')));
-	document.querySelectorAll('.tab-link, .view-tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === screen));
-	$('.breadcrumb').innerHTML = `Giám sát thời gian thực <span>/</span> ${screenTitles[screen]}`;
-	$('#tong-quan').dataset.screen = screen;
-	if (screen === 'location') window.setTimeout(() => { initStationMap(); stationMap?.invalidateSize(); }, 80);
-	window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-document.querySelectorAll('[data-tab]').forEach((tab) => tab.addEventListener('click', (event) => {
-	event.preventDefault();
-	switchScreen(tab.dataset.tab);
-	if (window.matchMedia('(max-width: 700px)').matches && appShell.classList.contains('sidebar-open')) appShell.classList.remove('sidebar-open');
-}));
-switchScreen('overview');
-$('#openMapBtn').addEventListener('click', () => window.open('https://www.openstreetmap.org/?mlat=12.211889&mlon=108.704333#map=14/12.211889/108.704333', '_blank', 'noopener'));
-
-function buildRainBars() {
-	const wrap = $('#rainBars');
-	if (!wrap || wrap.childElementCount) return;
-	for (let i = 0; i < 12; i += 1) {
-		const bar = document.createElement('i');
-		wrap.appendChild(bar);
-	}
-}
-
-function setGauge(id, percent) {
-	const el = document.getElementById(id);
-	if (!el) return;
-	const clamped = Math.max(0, Math.min(100, percent));
-	el.style.strokeDashoffset = (GAUGE_CIRCUMFERENCE * (1 - clamped / 100)).toFixed(1);
-}
-
-function updateRainBars(rainMm) {
-	const bars = document.querySelectorAll('#rainBars i');
-	const activeCount = Math.round((rainMm / 6) * bars.length);
-	bars.forEach((bar, index) => {
-		const fromEnd = bars.length - index;
-		const height = 22 + ((index * 37) % 55);
-		bar.style.height = `${height}%`;
-		bar.classList.toggle('filled', fromEnd <= activeCount);
-	});
-}
-
-function updateTelemetry() {
-	const soil = randomBetween(67.2, 70.1);
-	const mpuX = randomBetween(-0.012, 0.012, 3);
-	const mpuY = randomBetween(-0.012, 0.012, 3);
-	const mpuZ = randomBetween(0.985, 1.015, 3);
-	const movement = randomBetween(0.8, 3.2, 2);
-	const rain = randomBetween(2.9, 4.5);
-
-	$('#soilValue').textContent = soil.toFixed(1);
-	$('#mpuXValue').textContent = mpuX.toFixed(3);
-	$('#mpuYValue').textContent = mpuY.toFixed(3);
-	$('#mpuZValue').textContent = mpuZ.toFixed(3);
-	$('#movementValue').textContent = movement.toFixed(2);
-	$('#rainValue').textContent = rain.toFixed(1);
-
-	setGauge('soilGauge', soil);
-	setGauge('movementGauge', (movement / 5) * 100);
-	updateRainBars(rain);
-
-	const time = new Date().toLocaleTimeString('vi-VN', { hour12: false });
-	$('#lastUpdate').textContent = time;
-	$('#syncTime').textContent = 'vừa xong';
-	$('#packetTime').textContent = '2 giây trước';
-}
-
-function showToast(message, icon = 'check-circle-2') {
-	const toast = $('#toast');
-	toast.querySelector('span').textContent = message;
-	toast.querySelector('svg')?.remove();
-	toast.insertAdjacentHTML('afterbegin', `<i data-lucide="${icon}"></i>`);
-	lucide.createIcons();
-	toast.classList.add('show');
-	window.clearTimeout(showToast.timer);
-	showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 2800);
-}
-
-$('#testAlertBtn').addEventListener('click', () => showToast('Đã gửi cảnh báo thử qua module SIM', 'send'));
-$('#rangeSelect').addEventListener('change', (event) => showToast(`Đã chuyển sang ${event.target.value.toLowerCase()}`, 'bar-chart-3'));
-
-$('#thresholdForm').addEventListener('submit', async (event) => {
-	event.preventDefault();
-	if (!isAdmin || !currentUser) return;
-	const threshold = Number($('#thresholdValue').value);
-	if (!Number.isFinite(threshold) || threshold < 0) {
-		$('#thresholdStatus').textContent = 'Ngưỡng phải là số không âm';
-		return;
-	}
-	try {
-		await database.ref('settings/alertThreshold').set(threshold);
-		$('#thresholdStatus').textContent = 'Đã lưu ngưỡng lên Firebase';
-		showToast('Đã lưu ngưỡng cảnh báo');
-	} catch (error) {
-		$('#thresholdStatus').textContent = 'Không có quyền lưu ngưỡng';
-	}
-});
-
-$('#phoneForm').addEventListener('submit', async (event) => {
-	event.preventDefault();
-	if (!isAdmin || !currentUser) return;
-	const phone = $('#phoneNumber').value.trim();
-	if (!/^(0|\+84)[\d\s.-]{8,14}$/.test(phone)) {
-		$('#phoneStatus').textContent = 'Vui lòng nhập số điện thoại hợp lệ';
-		return;
-	}
-	try {
-		await database.ref('settings/phoneNumbers').push(phone);
-		$('#phoneNumber').value = '';
-		$('#phoneStatus').textContent = 'Đã thêm số điện thoại vào Firebase';
-		loadSettings();
-	} catch (error) {
-		$('#phoneStatus').textContent = 'Không có quyền lưu số điện thoại';
-	}
-});
-
-$('#phoneList').addEventListener('click', async (event) => {
-	const button = event.target.closest('[data-phone-key]');
-	if (!button || !isAdmin) return;
-	try {
-		await database.ref(`settings/phoneNumbers/${button.dataset.phoneKey}`).remove();
-		loadSettings();
-		showToast('Đã xóa số điện thoại');
-	} catch (error) {
-		showToast('Không có quyền xóa số điện thoại', 'triangle-alert');
-	}
-});
-
-$('#connectionBtn').addEventListener('click', () => {
-	const button = $('#connectionBtn');
-	button.disabled = true;
-	button.textContent = 'Đang kiểm tra...';
-	window.setTimeout(() => {
-		button.innerHTML = 'Kết nối ổn định <i data-lucide="check"></i>';
-		button.disabled = false;
-		lucide.createIcons();
-		showToast('ESP32 đang kết nối và gửi dữ liệu bình thường');
-	}, 900);
-});
-
-buildRainBars();
-initWeather();
-window.setInterval(updateTelemetry, 5000);
-updateTelemetry();
-lucide.createIcons();
+// ================== KHỞI CHẠY ==================
+connectMQTT();
