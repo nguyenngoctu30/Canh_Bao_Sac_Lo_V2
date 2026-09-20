@@ -73,6 +73,37 @@
           <div class="bar"><div class="bar-fill z" id="barZ"></div></div>
         </div>
         <p class="magnitude">|a| = <span id="magnitude">0.000</span> g</p>
+
+        <div class="motion-threshold-box">
+          <div class="motion-threshold-row">
+            <div class="motion-threshold-item warning">
+              <span>Hiện tại</span>
+              <strong id="motionWarningThresholdDisplay">--</strong>
+            </div>
+            <div class="motion-threshold-item danger">
+              <span>Hiện tại</span>
+              <strong id="motionDangerThresholdDisplay">--</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="threshold-box motion-threshold-config">
+          <label>Ngưỡng rung động mới</label>
+          <div class="motion-threshold-config-row">
+            <div class="mini-input">
+              <span>Cảnh báo</span>
+              <input type="number" id="motionWarningInput" min="0" max="10" step="0.1" value="0.5">
+            </div>
+            <div class="mini-input">
+              <span>Nguy hiểm</span>
+              <input type="number" id="motionDangerInput" min="0.5" max="20" step="0.1" value="2.0">
+            </div>
+          </div>
+          <div class="threshold-actions">
+            <button type="button" id="motionThresholdConfirmBtn" class="confirm-threshold-btn">Xác nhận</button>
+          </div>
+          <p class="threshold-current" id="motionThresholdCurrent">Hiện tại trên ESP32: cảnh báo 0.50 / nguy hiểm 2.00</p>
+        </div>
       </div>
 
       <div class="card">
@@ -100,10 +131,18 @@
         </div>
         <div class="threshold-box">
           <label for="soilThresholdInput">Cảnh báo khi độ ẩm đất vượt</label>
+          <div class="current-threshold-inline">
+            <span>Hiện tại</span>
+            <input type="text" id="soilThresholdCurrentValue" readonly value="80%">
+          </div>
           <div class="threshold-row">
             <input type="number" id="soilThresholdInput" min="0" max="100" step="1" value="80">
             <span>%</span>
           </div>
+          <div class="threshold-actions">
+            <button type="button" id="soilThresholdConfirmBtn" class="confirm-threshold-btn">Xác nhận</button>
+          </div>
+          <p class="threshold-current" id="soilThresholdCurrent">Hiện tại trên ESP32: 80%</p>
         </div>
       </div>
 
@@ -133,10 +172,18 @@
         </div>
         <div class="threshold-box">
           <label for="waterThresholdInput">Cảnh báo khi nước dâng vượt</label>
+          <div class="current-threshold-inline">
+            <span>Hiện tại</span>
+            <input type="text" id="waterThresholdCurrentValue" readonly value="10.0 cm">
+          </div>
           <div class="threshold-row">
             <input type="number" id="waterThresholdInput" min="0" max="200" step="0.5" value="10">
             <span>cm</span>
           </div>
+          <div class="threshold-actions">
+            <button type="button" id="waterThresholdConfirmBtn" class="confirm-threshold-btn">Xác nhận</button>
+          </div>
+          <p class="threshold-current" id="waterThresholdCurrent">Hiện tại trên ESP32: 10.0 cm</p>
         </div>
         <div class="baseline-form">
           <label for="baselineInput">Khoảng cách cố định (cm)</label>
@@ -183,6 +230,55 @@
       <div class="gps-meta">
         <span id="gpsStatus">Chưa có tọa độ GPS</span>
       </div>
+    </section>
+
+    <section class="card weather-card">
+      <div class="chart-header">
+        <h3>Thời tiết tại vị trí thiết bị</h3>
+        <div class="legend">
+          <span class="legend-item">Nguồn: Open-Meteo</span>
+        </div>
+      </div>
+      <div id="weatherBody" class="weather-body">
+        <p class="weather-status" id="weatherStatus">Đang chờ tọa độ GPS để lấy dữ liệu thời tiết...</p>
+      </div>
+    </section>
+
+    <section class="card hazard-card">
+      <div class="chart-header">
+        <h3>Cảnh báo lũ quét &amp; sạt lở (NCHMF, toàn quốc)</h3>
+        <div class="legend">
+          <span class="legend-item"><i class="dot danger"></i>Rất cao</span>
+          <span class="legend-item"><i class="dot warning"></i>Cao</span>
+          <span class="legend-item"><i class="dot stable"></i>Trung bình</span>
+        </div>
+      </div>
+      <div class="hazard-toolbar">
+        <input type="text" id="hazardSearch" placeholder="Lọc theo tỉnh/thành, xã/phường...">
+        <button id="hazardRefreshBtn">Làm mới</button>
+        <a class="hazard-source-link" href="https://luquetsatlo.nchmf.gov.vn/" target="_blank" rel="noopener noreferrer">Mở trang gốc ↗</a>
+      </div>
+      <p class="hazard-status" id="hazardStatus">Đang tải dữ liệu cảnh báo...</p>
+      <div class="hazard-list" id="hazardList"></div>
+    </section>
+
+    <section class="card external-card">
+      <div class="chart-header">
+        <h3>Nguồn tham khảo thêm</h3>
+      </div>
+      <div class="external-links">
+        <a href="https://luquetsatlo.nchmf.gov.vn/" target="_blank" rel="noopener noreferrer" class="external-link">
+          <span class="external-badge danger">Lũ quét · Sạt lở</span>
+          <span class="external-title">Hệ thống cảnh báo lũ quét, sạt lở đất thời gian thực (NCHMF)</span>
+          <span class="external-arrow">↗</span>
+        </a>
+        <a href="https://vndms.gov.vn/" target="_blank" rel="noopener noreferrer" class="external-link">
+          <span class="external-badge warning">Thiên tai</span>
+          <span class="external-title">Hệ thống giám sát thiên tai Việt Nam (VNDMS)</span>
+          <span class="external-arrow">↗</span>
+        </a>
+      </div>
+      <p class="note">Hai trang trên chặn nhúng iframe (chính sách bảo mật .gov.vn) nên được hiển thị dưới dạng liên kết trực tiếp thay vì nhúng khung.</p>
     </section>
 
   </main>

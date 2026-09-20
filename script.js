@@ -6,10 +6,20 @@ const MQTT_HOST = "broker.hivemq.com";
 const MQTT_WS_PORT = 8884;          // cổng WebSocket-SSL công khai của HiveMQ
 const MQTT_TOPIC = params.get("topic") || "terraguard/sensors/esp32";
 const MQTT_CONFIG_TOPIC = params.get("configTopic") || "terraguard/config/esp32/baseline_distance";
+const MQTT_SOIL_THRESHOLD_TOPIC = params.get("soilThresholdTopic") || "terraguard/config/esp32/soil_threshold";
+const MQTT_WATER_THRESHOLD_TOPIC = params.get("waterThresholdTopic") || "terraguard/config/esp32/water_threshold";
+const MQTT_MOTION_WARNING_THRESHOLD_TOPIC = params.get("motionWarningThresholdTopic") || "terraguard/config/esp32/motion_warning_threshold";
+const MQTT_MOTION_DANGER_THRESHOLD_TOPIC = params.get("motionDangerThresholdTopic") || "terraguard/config/esp32/motion_danger_threshold";
+const THRESHOLD_CONFIG_TOPICS = [
+  MQTT_SOIL_THRESHOLD_TOPIC,
+  MQTT_WATER_THRESHOLD_TOPIC,
+  MQTT_MOTION_WARNING_THRESHOLD_TOPIC,
+  MQTT_MOTION_DANGER_THRESHOLD_TOPIC
+];
 
-// Ngưỡng phân loại độ rung (phải khớp với mã ESP32)
-const MOVEMENT_WARNING = 0.5;
-const MOVEMENT_DANGER = 2.0;
+// Ngưỡng phân loại độ rung (mặc định, có thể cập nhật từ UI và ESP32)
+const DEFAULT_MOVEMENT_WARNING = 0.5;
+const DEFAULT_MOVEMENT_DANGER = 2.0;
 
 const MAX_LOG_ITEMS = 30;
 const MAX_CHART_POINTS = 60;
@@ -62,6 +72,23 @@ const DEFAULT_WATER_WARNING_THRESHOLD = 10;
 
 const soilThresholdInput = document.getElementById("soilThresholdInput");
 const waterThresholdInput = document.getElementById("waterThresholdInput");
+const soilThresholdCurrentValueEl = document.getElementById("soilThresholdCurrentValue");
+const waterThresholdCurrentValueEl = document.getElementById("waterThresholdCurrentValue");
+const soilThresholdConfirmBtn = document.getElementById("soilThresholdConfirmBtn");
+const waterThresholdConfirmBtn = document.getElementById("waterThresholdConfirmBtn");
+const soilThresholdCurrentEl = document.getElementById("soilThresholdCurrent");
+const waterThresholdCurrentEl = document.getElementById("waterThresholdCurrent");
+const motionWarningInput = document.getElementById("motionWarningInput");
+const motionDangerInput = document.getElementById("motionDangerInput");
+const motionThresholdConfirmBtn = document.getElementById("motionThresholdConfirmBtn");
+const motionWarningThresholdDisplay = document.getElementById("motionWarningThresholdDisplay");
+const motionDangerThresholdDisplay = document.getElementById("motionDangerThresholdDisplay");
+const motionThresholdCurrentEl = document.getElementById("motionThresholdCurrent");
+
+let currentSoilThreshold = DEFAULT_SOIL_WARNING_THRESHOLD;
+let currentWaterThreshold = DEFAULT_WATER_WARNING_THRESHOLD;
+let currentMotionWarningThreshold = DEFAULT_MOVEMENT_WARNING;
+let currentMotionDangerThreshold = DEFAULT_MOVEMENT_DANGER;
 
 const deviceIdEl = document.getElementById("deviceId");
 const topicNameEl = document.getElementById("topicName");
@@ -78,8 +105,52 @@ const alertCooldowns = new Map();
 let gpsMap = null;
 let gpsMarker = null;
 let gpsCircle = null;
+let browserGpsWatchId = null;
 
 topicNameEl.textContent = MQTT_TOPIC;
+
+function stopBrowserGpsFallback() {
+  if (browserGpsWatchId !== null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(browserGpsWatchId);
+    browserGpsWatchId = null;
+  }
+}
+
+function startBrowserGpsFallback() {
+  if (!("geolocation" in navigator)) {
+    gpsStatusEl.textContent = "Trình duyệt không hỗ trợ định vị vị trí.";
+    return;
+  }
+
+  if (browserGpsWatchId !== null) return;
+
+  const applyBrowserPosition = (position) => {
+    const lat = position.coords.latitude;
+    const lon = position.coords.longitude;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+    updateGpsMap(lat, lon);
+    gpsStatusEl.textContent = `Định vị máy tính: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    gpsStatusEl.title = "Đang dùng vị trí hiện tại của máy tính để mô phỏng GPS";
+  };
+
+  navigator.geolocation.getCurrentPosition(
+    applyBrowserPosition,
+    (error) => {
+      console.warn("Browser geolocation error:", error.message);
+      gpsStatusEl.textContent = "Không lấy được vị trí máy tính. Cho phép quyền định vị và thử lại.";
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+  );
+
+  browserGpsWatchId = navigator.geolocation.watchPosition(
+    applyBrowserPosition,
+    (error) => {
+      console.warn("Browser geolocation watch error:", error.message);
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
+  );
+}
 
 function initMap() {
   const mapEl = document.getElementById("map");
@@ -113,9 +184,12 @@ function updateGpsMap(lat, lon) {
   gpsMap.setView(position, Math.max(gpsMap.getZoom(), 15));
   gpsMarker.bindPopup(`Vị trí thiết bị<br>${lat.toFixed(5)}, ${lon.toFixed(5)}`);
   gpsStatusEl.textContent = `Tọa độ: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+  maybeFetchWeather(lat, lon);
 }
 
 initMap();
+startBrowserGpsFallback();
 
 // ================== TRẠNG THÁI ==================
 let history = []; // { t: Date, movement: number, state: string }
@@ -127,19 +201,132 @@ let lastSoilHumidity = null;
 let lastWaterLevel = { valid: false, distanceCm: 0, levelChangeCm: 0, baselineDistanceCm: 0 };
 
 function getSoilWarningThreshold() {
+  return Number.isFinite(currentSoilThreshold) ? currentSoilThreshold : DEFAULT_SOIL_WARNING_THRESHOLD;
+}
+
+function getWaterWarningThreshold() {
+  return Number.isFinite(currentWaterThreshold) ? currentWaterThreshold : DEFAULT_WATER_WARNING_THRESHOLD;
+}
+
+function getMotionWarningThreshold() {
+  return Number.isFinite(currentMotionWarningThreshold) ? currentMotionWarningThreshold : DEFAULT_MOVEMENT_WARNING;
+}
+
+function getMotionDangerThreshold() {
+  return Number.isFinite(currentMotionDangerThreshold) ? currentMotionDangerThreshold : DEFAULT_MOVEMENT_DANGER;
+}
+
+function getSoilDraftThreshold() {
   const value = Number.parseFloat(soilThresholdInput.value);
   if (!Number.isFinite(value)) return DEFAULT_SOIL_WARNING_THRESHOLD;
   return Math.min(100, Math.max(0, value));
 }
 
-function getWaterWarningThreshold() {
+function getWaterDraftThreshold() {
   const value = Number.parseFloat(waterThresholdInput.value);
   if (!Number.isFinite(value)) return DEFAULT_WATER_WARNING_THRESHOLD;
   return Math.max(0, value);
 }
 
+function getMotionDraftWarningThreshold() {
+  const value = Number.parseFloat(motionWarningInput.value);
+  if (!Number.isFinite(value)) return DEFAULT_MOVEMENT_WARNING;
+  return Math.max(0, value);
+}
+
+function getMotionDraftDangerThreshold() {
+  const value = Number.parseFloat(motionDangerInput.value);
+  if (!Number.isFinite(value)) return DEFAULT_MOVEMENT_DANGER;
+  return Math.max(0, value);
+}
+
 function updateWarningSummary() {
   warningFlagEl.textContent = motionWarningState || soilWarningState || waterWarningState ? "CÓ" : "Không";
+}
+
+function updateThresholdDisplays() {
+  soilThresholdCurrentValueEl.value = `${currentSoilThreshold.toFixed(0)}%`;
+  waterThresholdCurrentValueEl.value = `${currentWaterThreshold.toFixed(1)} cm`;
+  soilThresholdCurrentEl.textContent = `Hiện tại trên ESP32: ${currentSoilThreshold.toFixed(0)}%`;
+  waterThresholdCurrentEl.textContent = `Hiện tại trên ESP32: ${currentWaterThreshold.toFixed(1)} cm`;
+
+  motionWarningThresholdDisplay.textContent = `${currentMotionWarningThreshold.toFixed(1)}`;
+  motionDangerThresholdDisplay.textContent = `${currentMotionDangerThreshold.toFixed(1)}`;
+  motionThresholdCurrentEl.textContent = `Hiện tại trên ESP32: cảnh báo ${currentMotionWarningThreshold.toFixed(2)} / nguy hiểm ${currentMotionDangerThreshold.toFixed(2)}`;
+}
+
+function publishThresholdValue(topic, value, label, unit) {
+  if (!Number.isFinite(value)) {
+    showAlert({ type: "warning", title: "Giá trị không hợp lệ", message: `${label} phải là số hợp lệ.`, key: `threshold-invalid-${label}` });
+    return false;
+  }
+
+  if (!mqttClientRef || !mqttClientRef.connected) {
+    showAlert({ type: "warning", title: "Chưa kết nối MQTT", message: `Không thể gửi ${label} vì thiết bị chưa kết nối.`, key: `threshold-offline-${label}` });
+    return false;
+  }
+
+  mqttClientRef.publish(topic, value.toString(), { retain: true, qos: 0 }, (err) => {
+    if (err) {
+      showAlert({ type: "danger", title: "Gửi thất bại", message: `${label} chưa được cập nhật lên ESP32.`, key: `threshold-fail-${label}` });
+      return;
+    }
+
+    showAlert({ type: "info", title: "Đã gửi ngưỡng", message: `${label}: ${value.toFixed(unit === "cm" ? 1 : 0)}${unit}`, key: `threshold-ok-${label}` });
+  });
+
+  return true;
+}
+
+function sendSoilThreshold() {
+  const value = getSoilDraftThreshold();
+  if (!publishThresholdValue(MQTT_SOIL_THRESHOLD_TOPIC, value, "Ngưỡng độ ẩm đất", "%")) return;
+  currentSoilThreshold = value;
+  soilThresholdCurrentEl.textContent = `Ngưỡng hiện tại: ${value.toFixed(0)}%`;
+}
+
+function sendWaterThreshold() {
+  const value = getWaterDraftThreshold();
+  if (!publishThresholdValue(MQTT_WATER_THRESHOLD_TOPIC, value, "Ngưỡng mực nước", " cm")) return;
+  currentWaterThreshold = value;
+  waterThresholdCurrentEl.textContent = `Ngưỡng hiện tại: ${value.toFixed(1)} cm`;
+}
+
+function sendMotionThresholds() {
+  const warning = getMotionDraftWarningThreshold();
+  const danger = getMotionDraftDangerThreshold();
+
+  if (danger <= warning) {
+    showAlert({ type: "warning", title: "Ngưỡng không hợp lệ", message: "Ngưỡng nguy hiểm phải lớn hơn ngưỡng cảnh báo.", key: "motion-threshold-invalid" });
+    return false;
+  }
+
+  if (!mqttClientRef || !mqttClientRef.connected) {
+    showAlert({ type: "warning", title: "Chưa kết nối MQTT", message: "Không thể gửi ngưỡng rung động vì thiết bị chưa kết nối.", key: "motion-threshold-offline" });
+    return false;
+  }
+
+  mqttClientRef.publish(MQTT_MOTION_WARNING_THRESHOLD_TOPIC, warning.toString(), { retain: true, qos: 0 }, (err) => {
+    if (err) {
+      showAlert({ type: "danger", title: "Gửi thất bại", message: "Ngưỡng cảnh báo rung động chưa cập nhật.", key: "motion-warning-fail" });
+      return;
+    }
+  });
+
+  mqttClientRef.publish(MQTT_MOTION_DANGER_THRESHOLD_TOPIC, danger.toString(), { retain: true, qos: 0 }, (err) => {
+    if (err) {
+      showAlert({ type: "danger", title: "Gửi thất bại", message: "Ngưỡng nguy hiểm rung động chưa cập nhật.", key: "motion-danger-fail" });
+      return;
+    }
+
+    currentMotionWarningThreshold = warning;
+    currentMotionDangerThreshold = danger;
+    showAlert({ type: "info", title: "Đã gửi ngưỡng rung động", message: `Cảnh báo ${warning.toFixed(2)} / nguy hiểm ${danger.toFixed(2)}`, key: "motion-threshold-ok" });
+    motionThresholdCurrentEl.textContent = `Ngưỡng hiện tại: cảnh báo ${warning.toFixed(2)} / nguy hiểm ${danger.toFixed(2)}`;
+    updateThresholdDisplays();
+  });
+
+  return true;
 }
 
 function triggerReloadEffect() {
@@ -167,18 +354,32 @@ function connectMQTT() {
   });
   mqttClientRef = client;
 
+  updateThresholdDisplays();
+
   client.on("connect", () => {
     console.log("[MQTT] Đã connect broker, clientId =", clientId);
     setConnStatus("connected", `Đang subscribe "${MQTT_TOPIC}"...`);
+
     client.subscribe(MQTT_TOPIC, { qos: 0 }, (err, granted) => {
       if (err) {
         console.error("[MQTT] Subscribe lỗi:", err);
         setConnStatus("error", "Lỗi khi subscribe topic");
       } else {
         console.log("[MQTT] Subscribe thành công:", granted);
-        setConnStatus("connected", `Đã kết nối · lắng nghe "${MQTT_TOPIC}"`);
       }
     });
+
+    THRESHOLD_CONFIG_TOPICS.forEach((topic) => {
+      client.subscribe(topic, { qos: 0 }, (err, granted) => {
+        if (err) {
+          console.error("[MQTT] Subscribe retained topic lỗi:", topic, err);
+        } else {
+          console.log("[MQTT] Subscribe retained threshold topic:", topic, granted);
+        }
+      });
+    });
+
+    setConnStatus("connected", `Đã kết nối · lắng nghe "${MQTT_TOPIC}"`);
   });
 
   client.on("reconnect", () => {
@@ -195,12 +396,62 @@ function connectMQTT() {
   });
 
   client.on("message", (topic, payload) => {
-    console.log("[MQTT] Nhận message trên topic:", topic, "| raw:", payload.toString());
+    const raw = payload.toString();
+    console.log("[MQTT] Nhận message trên topic:", topic, "| raw:", raw);
+
+    if (topic === MQTT_SOIL_THRESHOLD_TOPIC) {
+      const value = Number(raw);
+      if (Number.isFinite(value)) {
+        currentSoilThreshold = value;
+        if (document.activeElement !== soilThresholdInput) {
+          soilThresholdInput.value = value.toFixed(0);
+        }
+        updateThresholdDisplays();
+      }
+      return;
+    }
+
+    if (topic === MQTT_WATER_THRESHOLD_TOPIC) {
+      const value = Number(raw);
+      if (Number.isFinite(value)) {
+        currentWaterThreshold = value;
+        if (document.activeElement !== waterThresholdInput) {
+          waterThresholdInput.value = value.toFixed(1);
+        }
+        updateThresholdDisplays();
+      }
+      return;
+    }
+
+    if (topic === MQTT_MOTION_WARNING_THRESHOLD_TOPIC) {
+      const value = Number(raw);
+      if (Number.isFinite(value)) {
+        currentMotionWarningThreshold = value;
+        if (document.activeElement !== motionWarningInput) {
+          motionWarningInput.value = value.toFixed(2);
+        }
+        updateThresholdDisplays();
+      }
+      return;
+    }
+
+    if (topic === MQTT_MOTION_DANGER_THRESHOLD_TOPIC) {
+      const value = Number(raw);
+      if (Number.isFinite(value)) {
+        currentMotionDangerThreshold = value;
+        if (document.activeElement !== motionDangerInput) {
+          motionDangerInput.value = value.toFixed(2);
+        }
+        updateThresholdDisplays();
+      }
+      return;
+    }
+
     try {
-      const data = JSON.parse(payload.toString());
+      const data = JSON.parse(raw);
       handleSensorData(data);
     } catch (e) {
-      console.error("[MQTT] Không parse được payload JSON:", payload.toString(), e);
+      console.error("[MQTT] Không parse được payload JSON:", raw, e);
     }
   });
 }
@@ -248,18 +499,39 @@ function handleSensorData(data) {
     updateSoilStatus(data.soilHumidity);
   }
 
+  if (Number.isFinite(data.soilThreshold)) {
+    currentSoilThreshold = Number(data.soilThreshold);
+  }
+
+  if (Number.isFinite(data.motionWarningThreshold)) {
+    currentMotionWarningThreshold = Number(data.motionWarningThreshold);
+  }
+
+  if (Number.isFinite(data.motionDangerThreshold)) {
+    currentMotionDangerThreshold = Number(data.motionDangerThreshold);
+  }
+
   // Mực nước (siêu âm AJ-SR04M)
   if (data.waterLevel) {
     lastWaterLevel = data.waterLevel;
+    if (Number.isFinite(data.waterLevel.thresholdCm)) {
+      currentWaterThreshold = Number(data.waterLevel.thresholdCm);
+    }
     updateWaterLevel(data.waterLevel);
   }
+
+  updateThresholdDisplays();
 
   if (data.gps && typeof data.gps.lat === "number" && typeof data.gps.lon === "number") {
     const gpsLat = Number(data.gps.lat);
     const gpsLon = Number(data.gps.lon);
     if (Number.isFinite(gpsLat) && Number.isFinite(gpsLon)) {
+      stopBrowserGpsFallback();
       updateGpsMap(gpsLat, gpsLon);
+      gpsStatusEl.textContent = `Tọa độ thiết bị: ${gpsLat.toFixed(5)}, ${gpsLon.toFixed(5)}`;
     }
+  } else {
+    startBrowserGpsFallback();
   }
 
   // Mức rung & trạng thái
@@ -359,15 +631,37 @@ function updateWaterLevel(wl) {
 }
 
 soilThresholdInput.addEventListener("input", () => {
+  updateThresholdDisplays();
   if (lastSoilHumidity !== null) {
     updateSoilStatus(lastSoilHumidity);
   }
 });
 
+soilThresholdConfirmBtn.addEventListener("click", () => {
+  sendSoilThreshold();
+});
+
 waterThresholdInput.addEventListener("input", () => {
+  updateThresholdDisplays();
   if (lastWaterLevel.valid) {
     updateWaterLevel(lastWaterLevel);
   }
+});
+
+waterThresholdConfirmBtn.addEventListener("click", () => {
+  sendWaterThreshold();
+});
+
+motionWarningInput.addEventListener("input", () => {
+  updateThresholdDisplays();
+});
+
+motionDangerInput.addEventListener("input", () => {
+  updateThresholdDisplays();
+});
+
+motionThresholdConfirmBtn.addEventListener("click", () => {
+  sendMotionThresholds();
 });
 
 baselineSetBtn.addEventListener("click", () => {
@@ -393,8 +687,11 @@ baselineSetBtn.addEventListener("click", () => {
 });
 
 function classifyMovement(movement) {
-  if (movement < MOVEMENT_WARNING) return "stable";
-  if (movement < MOVEMENT_DANGER) return "warning";
+  const warningThreshold = getMotionWarningThreshold();
+  const dangerThreshold = Math.max(getMotionDangerThreshold(), warningThreshold + 0.1);
+
+  if (movement < warningThreshold) return "stable";
+  if (movement < dangerThreshold) return "warning";
   return "danger";
 }
 
@@ -444,6 +741,7 @@ function updateStateBanner(state, movement) {
   const meta = STATE_META[state] || STATE_META.stable;
   stateBanner.classList.remove("stable", "warning", "danger");
   stateBanner.classList.add(state);
+  stateBanner.dataset.state = state;
   document.body.classList.remove("danger-mode");
   if (state === "danger") {
     document.body.classList.add("danger-mode");
@@ -500,14 +798,14 @@ function drawChart() {
 
   if (history.length === 0) return;
 
-  const maxVal = Math.max(MOVEMENT_DANGER * 1.2, ...history.map((h) => h.movement));
+  const maxVal = Math.max(getMotionDangerThreshold() * 1.2, ...history.map((h) => h.movement));
   const padding = 10;
   const w = cssWidth - padding * 2;
   const h = cssHeight - padding * 2;
 
   // Đường ngưỡng
-  drawThresholdLine(MOVEMENT_WARNING, maxVal, padding, w, h, "#fbbf24");
-  drawThresholdLine(MOVEMENT_DANGER, maxVal, padding, w, h, "#f87171");
+  drawThresholdLine(getMotionWarningThreshold(), maxVal, padding, w, h, "#fbbf24");
+  drawThresholdLine(getMotionDangerThreshold(), maxVal, padding, w, h, "#f87171");
 
   // Đường dữ liệu
   ctx.beginPath();
@@ -547,6 +845,245 @@ function drawThresholdLine(value, maxVal, padding, w, h, color) {
 }
 
 window.addEventListener("resize", drawChart);
+
+// ================== THỜI TIẾT (Open-Meteo, theo tọa độ GPS) ==================
+// Open-Meteo: miễn phí, không cần API key, hỗ trợ CORS trực tiếp từ trình duyệt.
+const WEATHER_REFRESH_MS = 15 * 60 * 1000; // 15 phút/lần, đủ dùng cho dự báo thời tiết
+const WEATHER_MOVE_THRESHOLD_DEG = 0.01;   // ~1km, tránh gọi lại API khi vị trí gần như không đổi
+
+const weatherStatusEl = document.getElementById("weatherStatus");
+const weatherBodyEl = document.getElementById("weatherBody");
+
+let lastWeatherFetchTime = 0;
+let lastWeatherCoords = null;
+
+// Bảng mã thời tiết WMO (rút gọn, đủ dùng cho hiển thị + phát hiện mưa)
+const WMO_CODE_META = {
+  0: { icon: "☀️", label: "Trời quang" },
+  1: { icon: "🌤️", label: "Ít mây" },
+  2: { icon: "⛅", label: "Mây rải rác" },
+  3: { icon: "☁️", label: "Nhiều mây" },
+  45: { icon: "🌫️", label: "Sương mù" },
+  48: { icon: "🌫️", label: "Sương mù đóng băng" },
+  51: { icon: "🌦️", label: "Mưa phùn nhẹ" },
+  53: { icon: "🌦️", label: "Mưa phùn" },
+  55: { icon: "🌦️", label: "Mưa phùn dày" },
+  61: { icon: "🌧️", label: "Mưa nhỏ" },
+  63: { icon: "🌧️", label: "Mưa vừa" },
+  65: { icon: "🌧️", label: "Mưa to" },
+  80: { icon: "🌧️", label: "Mưa rào nhẹ" },
+  81: { icon: "🌧️", label: "Mưa rào" },
+  82: { icon: "⛈️", label: "Mưa rào rất to" },
+  95: { icon: "⛈️", label: "Dông" },
+  96: { icon: "⛈️", label: "Dông kèm mưa đá" },
+  99: { icon: "⛈️", label: "Dông mạnh kèm mưa đá" },
+};
+
+function weatherCodeMeta(code) {
+  return WMO_CODE_META[code] || { icon: "🌡️", label: "Không rõ" };
+}
+
+// Chỉ gọi lại API nếu: chưa từng gọi, đã quá lâu, hoặc vị trí thay đổi đáng kể —
+// tránh spam API khi GPS/định vị trình duyệt cập nhật liên tục mỗi vài giây.
+function maybeFetchWeather(lat, lon) {
+  const now = Date.now();
+  const moved =
+    !lastWeatherCoords ||
+    Math.abs(lastWeatherCoords.lat - lat) > WEATHER_MOVE_THRESHOLD_DEG ||
+    Math.abs(lastWeatherCoords.lon - lon) > WEATHER_MOVE_THRESHOLD_DEG;
+
+  if (!moved && now - lastWeatherFetchTime < WEATHER_REFRESH_MS) return;
+
+  lastWeatherFetchTime = now;
+  lastWeatherCoords = { lat, lon };
+  fetchWeather(lat, lon);
+}
+
+async function fetchWeather(lat, lon) {
+  weatherStatusEl.textContent = "Đang tải dữ liệu thời tiết...";
+  try {
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m` +
+      `&hourly=precipitation_probability,precipitation` +
+      `&forecast_days=1&timezone=auto`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderWeather(data);
+  } catch (err) {
+    console.error("[Weather] Lỗi tải dữ liệu Open-Meteo:", err);
+    weatherStatusEl.textContent = "Không tải được dữ liệu thời tiết (lỗi mạng hoặc API tạm gián đoạn).";
+  }
+}
+
+function renderWeather(data) {
+  const cur = data.current;
+  if (!cur) {
+    weatherStatusEl.textContent = "Dữ liệu thời tiết trả về không hợp lệ.";
+    return;
+  }
+
+  const meta = weatherCodeMeta(cur.weather_code);
+
+  // Tìm xác suất mưa cao nhất trong 6 giờ tới (rất liên quan tới cảnh báo lũ quét)
+  let maxRainProb = null;
+  let maxRainMm = 0;
+  if (data.hourly && Array.isArray(data.hourly.precipitation_probability)) {
+    const nowIdx = data.hourly.time
+      ? data.hourly.time.findIndex((t) => new Date(t).getTime() >= Date.now())
+      : 0;
+    const start = Math.max(0, nowIdx);
+    const probs = data.hourly.precipitation_probability.slice(start, start + 6);
+    const rains = (data.hourly.precipitation || []).slice(start, start + 6);
+    if (probs.length) maxRainProb = Math.max(...probs);
+    if (rains.length) maxRainMm = Math.max(...rains);
+  }
+
+  weatherStatusEl.textContent = "";
+  weatherBodyEl.innerHTML = `
+    <div class="weather-now">
+      <div class="weather-icon">${meta.icon}</div>
+      <div>
+        <div class="weather-temp">${cur.temperature_2m.toFixed(1)}°C</div>
+        <div class="weather-desc">${meta.label}</div>
+      </div>
+    </div>
+    <div class="weather-stats">
+      <div class="weather-stat"><strong>${cur.relative_humidity_2m}%</strong><span>Độ ẩm không khí</span></div>
+      <div class="weather-stat"><strong>${cur.wind_speed_10m.toFixed(1)} km/h</strong><span>Gió</span></div>
+      <div class="weather-stat"><strong>${cur.precipitation.toFixed(1)} mm</strong><span>Mưa hiện tại</span></div>
+      ${maxRainProb !== null ? `<div class="weather-stat"><strong>${maxRainProb}%</strong><span>Khả năng mưa (6h tới)</span></div>` : ""}
+    </div>
+    ${
+      maxRainProb !== null && maxRainProb >= 60
+        ? `<div class="weather-rain-alert">⚠️ Khả năng mưa lớn trong 6 giờ tới (${maxRainProb}%, tối đa ~${maxRainMm.toFixed(1)}mm/giờ) — theo dõi sát mực nước và độ ẩm đất.</div>`
+        : ""
+    }
+  `;
+}
+
+// ================== CẢNH BÁO LŨ QUÉT / SẠT LỞ (NCHMF) ==================
+// API nội bộ của luquetsatlo.nchmf.gov.vn (không chính thức công khai cho bên
+// thứ ba) — thử gọi thẳng từ trình duyệt; nếu bị chặn CORS sẽ tự chuyển sang
+// hiển thị thông báo + link mở trang gốc, không làm vỡ giao diện.
+const FLOOD_API_URL = "https://luquetsatlo.nchmf.gov.vn/LayerMapBox/getDSCanhbaoSLLQ";
+const FLOOD_REFRESH_MS = 10 * 60 * 1000; // NCHMF công bố cập nhật 1 giờ/lần, 10 phút là đủ
+const SEVERITY_RANK = { "Rất cao": 3, "Cao": 2, "Trung bình": 1 };
+
+const hazardStatusEl = document.getElementById("hazardStatus");
+const hazardListEl = document.getElementById("hazardList");
+const hazardSearchEl = document.getElementById("hazardSearch");
+const hazardRefreshBtn = document.getElementById("hazardRefreshBtn");
+
+let hazardRawItems = []; // đã dedup theo xã, giữ mức nguy cơ cao nhất
+
+function getVnDateRoundedToHour() {
+  // Giờ Việt Nam (GMT+7), làm tròn về đầu giờ — đúng định dạng API yêu cầu
+  const nowVnStr = new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh", hour12: false });
+  const vnDate = new Date(nowVnStr);
+  vnDate.setMinutes(0, 0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${vnDate.getFullYear()}-${pad(vnDate.getMonth() + 1)}-${pad(vnDate.getDate())} ${pad(vnDate.getHours())}:00:00`;
+}
+
+function severityOf(row) {
+  const s1 = SEVERITY_RANK[row.nguycosatlo] || 0;
+  const s2 = SEVERITY_RANK[row.nguycoluquet] || 0;
+  return Math.max(s1, s2);
+}
+
+async function fetchFloodWarnings() {
+  hazardStatusEl.textContent = "Đang tải dữ liệu cảnh báo từ NCHMF...";
+  hazardStatusEl.classList.remove("error");
+
+  try {
+    const body = new URLSearchParams({ sogiodubao: "6", date: getVnDateRoundedToHour() });
+    const res = await fetch(FLOOD_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const rawList = await res.json();
+    if (!Array.isArray(rawList)) throw new Error("Định dạng phản hồi không như mong đợi");
+
+    // Dedup theo xã (commune_id_2cap), chỉ giữ bản ghi mức nguy cơ cao nhất
+    const byCommune = new Map();
+    rawList.forEach((row) => {
+      const id = row.commune_id_2cap;
+      if (!id) return;
+      const sev = severityOf(row);
+      if (sev === 0) return; // bỏ các xã không có cảnh báo
+      const existing = byCommune.get(id);
+      if (!existing || sev > existing._severity) {
+        byCommune.set(id, { ...row, _severity: sev });
+      }
+    });
+
+    hazardRawItems = Array.from(byCommune.values()).sort((a, b) => {
+      if (b._severity !== a._severity) return b._severity - a._severity;
+      return (a.provinceName_2cap || "").localeCompare(b.provinceName_2cap || "");
+    });
+
+    hazardStatusEl.textContent = hazardRawItems.length
+      ? `Cập nhật lúc ${new Date().toLocaleTimeString("vi-VN")} · ${hazardRawItems.length} xã/phường đang có cảnh báo`
+      : `Cập nhật lúc ${new Date().toLocaleTimeString("vi-VN")} · Hiện không có khu vực nào được cảnh báo`;
+
+    renderHazardList();
+  } catch (err) {
+    console.error("[Hazard] Không gọi được API NCHMF trực tiếp:", err);
+    hazardStatusEl.textContent =
+      "Không thể tải trực tiếp từ trình duyệt (nhiều khả năng do máy chủ NCHMF chặn CORS cho truy cập từ web bên ngoài). Bấm \"Mở trang gốc\" để xem đầy đủ.";
+    hazardStatusEl.classList.add("error");
+    hazardListEl.innerHTML = "";
+  }
+}
+
+function renderHazardList() {
+  const keyword = hazardSearchEl.value.trim().toLowerCase();
+  const filtered = keyword
+    ? hazardRawItems.filter((row) =>
+        `${row.provinceName_2cap || ""} ${row.commune_name_2cap || ""}`.toLowerCase().includes(keyword)
+      )
+    : hazardRawItems;
+
+  if (filtered.length === 0) {
+    hazardListEl.innerHTML = `<p class="hazard-empty">Không có khu vực nào khớp bộ lọc.</p>`;
+    return;
+  }
+
+  const SEV_LABEL = { 3: "Rất cao", 2: "Cao", 1: "Trung bình" };
+
+  hazardListEl.innerHTML = filtered
+    .slice(0, 200) // giới hạn hiển thị để không quá tải DOM
+    .map((row) => {
+      const sev = row._severity;
+      const commune = (row.commune_name_2cap || "").replace(/^P\.\s*/, "");
+      return `
+        <div class="hazard-item sev-${sev}">
+          <span class="hazard-severity"></span>
+          <div class="hazard-place">
+            <div class="hazard-commune">${commune || "(không rõ xã/phường)"}</div>
+            <div class="hazard-province">${row.provinceName_2cap || ""}</div>
+          </div>
+          <div class="hazard-tags">
+            ${row.nguycosatlo ? `<span class="hazard-tag sev-${SEVERITY_RANK[row.nguycosatlo] || 0}">Sạt lở: ${row.nguycosatlo}</span>` : ""}
+            ${row.nguycoluquet ? `<span class="hazard-tag sev-${SEVERITY_RANK[row.nguycoluquet] || 0}">Lũ quét: ${row.nguycoluquet}</span>` : ""}
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+hazardSearchEl.addEventListener("input", renderHazardList);
+hazardRefreshBtn.addEventListener("click", fetchFloodWarnings);
+
+fetchFloodWarnings();
+setInterval(fetchFloodWarnings, FLOOD_REFRESH_MS);
 
 // ================== KHỞI CHẠY ==================
 connectMQTT();

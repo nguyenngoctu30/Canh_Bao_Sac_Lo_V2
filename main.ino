@@ -1,23 +1,33 @@
 /*
- * ESP32 - Đọc ADXL345 (gia tốc XYZ) và gửi liên tục lên MQTT
+ * ESP32 - Đọc ADXL345 (gia tốc XYZ), cảm biến độ ẩm đất, cảm biến siêu âm
+ * AJ-SR04M (mực nước), GPS NEO-6M, và gửi liên tục lên MQTT.
  *
  * Đấu dây:
- *   VCC -> 3V3
- *   GND -> GND
- *   SDA -> GPIO21
- *   SCL -> GPIO22
+ *   ADXL345 : SDA -> GPIO21, SCL -> GPIO22, VCC -> 3V3, GND -> GND
+ *             Địa chỉ I2C: 0x53 (SDO nối GND) hoặc 0x1D (SDO nối 3V3)
+ *   Độ ẩm đất (analog): AOUT -> GPIO34, VCC -> 3V3, GND -> GND
+ *   AJ-SR04M (Trig/Echo, R27 để trống): TRIG -> GPIO27, ECHO -> GPIO26 (qua
+ *             cầu chia áp vì ECHO ra mức 5V), VCC -> 5V, GND -> GND
+ *   GPS NEO-6M: TX -> GPIO16 (RX2), RX -> GPIO17 (TX2), VCC -> 3V3/5V tùy module
  *
- * Địa chỉ I2C ADXL345 : 0x53 (SDO nối GND) hoặc 0x1D (SDO nối 3V3)
+ * SỬA LỖI BIÊN DỊCH QUAN TRỌNG so với bản trước:
+ *   Arduino IDE tự động sinh "function prototype" và CHÈN LÊN ĐẦU FILE trước
+ *   khi biên dịch. Nếu một hàm dùng kiểu dữ liệu tự định nghĩa (struct) làm
+ *   tham số, mà struct đó lại được khai báo Ở GIỮA file (sau các đoạn code
+ *   khác), thì prototype tự sinh sẽ nằm PHÍA TRÊN struct đó -> lỗi
+ *   "'AdxlData' was not declared in this scope". Cách sửa: CHUYỂN TẤT CẢ
+ *   struct (AdxlData, GpsData) lên NGAY SAU phần #include, trước mọi code
+ *   khác trong file.
  *
- * SỬA LỖI QUAN TRỌNG so với bản trước:
- *   1. PubSubClient mặc định chỉ cho phép gói tin MQTT tối đa 256 byte.
- *      Payload JSON + topic của dự án này vượt quá 256 byte nên publish()
- *      luôn trả về false (thất bại) dù Serial vẫn in "Published..." vì code
- *      cũ không kiểm tra giá trị trả về. -> Đã setBufferSize(512) và kiểm
- *      tra return value của publish().
- *   2. Nếu mất kết nối MQTT giữa chừng, code cũ không có logic tự kết nối
- *      lại trong loop() -> đã thêm hàm reconnectMQTT() không chặn (non-blocking).
- *   3. Gửi liên tục với chu kỳ ngắn (mặc định 500ms) thay vì 2000ms.
+ * SỬA LỖI TỪ CÁC BẢN TRƯỚC (giữ nguyên):
+ *   1. PubSubClient mặc định chỉ cho phép gói tin MQTT tối đa 256 byte ->
+ *      đã setBufferSize(1024) và kiểm tra return value của publish().
+ *   2. Tự động reconnect MQTT không chặn (non-blocking) trong loop().
+ *   3. Gửi liên tục với chu kỳ ngắn (mặc định 500ms).
+ *   4. Baseline rung hiệu chuẩn bằng trung bình nhiều mẫu + lọc trung bình
+ *      trượt + hysteresis cho trạng thái rung.
+ *   5. Cảm biến siêu âm: timeout 60ms + khoảng nghỉ giữa các lần đo >= 60ms
+ *      theo đúng datasheet AJ-SR04M (Mode 1, R27 để trống).
  */
 
 #include <Wire.h>
@@ -25,10 +35,13 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 
-#define GPS_SERIAL Serial2
-#define GPS_RX_PIN 16
-#define GPS_TX_PIN 17
-const uint32_t GPS_BAUD_RATE = 9600;
+// ================== STRUCT (BẮT BUỘC ĐỂ Ở ĐẦU FILE) ==================
+// Xem giải thích lỗi biên dịch ở đầu file: mọi struct dùng làm tham số hàm
+// PHẢI được khai báo trước tất cả các hàm, ngay sau phần #include.
+
+struct AdxlData {
+  float x, y, z;  // g
+};
 
 struct GpsData {
   bool valid;
@@ -36,12 +49,17 @@ struct GpsData {
   double longitude;
 };
 
+// ================== GPS NEO-6M ==================
+#define GPS_SERIAL Serial2
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+const uint32_t GPS_BAUD_RATE = 9600;
+
 GpsData currentGps = {false, 0.0, 0.0};
 
 // Chuyển tọa độ dạng DMM (ddmm.mmmm) sang decimal degrees
 // Ví dụ: lat = "1053.1234" => 10 độ + 53.1234 phút => 10 + 53.1234/60 = 10.88539
 //        lon = "10640.1234" => 106 độ + 40.1234 phút => 106 + 40.1234/60 = 106.668723
-
 double convertDmmToDecimal(String dmm, char hemi) {
   if (dmm.length() == 0) return 0.0;
 
@@ -63,7 +81,6 @@ double convertDmmToDecimal(String dmm, char hemi) {
   }
 
   double decimal = degrees + (minutes / 60.0);
-
   if (hemi == 'S' || hemi == 'W') decimal *= -1.0;
   return decimal;
 }
@@ -121,7 +138,6 @@ bool parseNmeaLine(const String &line, GpsData &gpsOut) {
       }
     }
   }
-
   return false;
 }
 
@@ -151,13 +167,14 @@ const char* WIFI_PASSWORD = "10101010";
 const char* MQTT_BROKER = "broker.hivemq.com";
 const uint16_t MQTT_PORT = 1883;
 const char* MQTT_TOPIC = "terraguard/sensors/esp32";
-const char* MQTT_CONFIG_TOPIC = "terraguard/config/esp32/baseline_distance";                      // web gửi khoảng cách cố định (cm) xuống đây
-const char* MQTT_SOIL_THRESHOLD_TOPIC = "terraguard/config/esp32/soil_threshold";                // web gửi ngưỡng độ ẩm cảnh báo (%)
-const char* MQTT_WATER_THRESHOLD_TOPIC = "terraguard/config/esp32/water_threshold";              // web gửi ngưỡng nước dâng cảnh báo (cm)
+const char* MQTT_CONFIG_TOPIC = "terraguard/config/esp32/baseline_distance";        // web gửi khoảng cách cố định (cm) xuống đây
+const char* MQTT_SOIL_THRESHOLD_TOPIC = "terraguard/config/esp32/soil_threshold";   // web gửi ngưỡng độ ẩm cảnh báo (%)
+const char* MQTT_WATER_THRESHOLD_TOPIC = "terraguard/config/esp32/water_threshold"; // web gửi ngưỡng nước dâng cảnh báo (cm)
+const char* MQTT_MOTION_WARNING_THRESHOLD_TOPIC = "terraguard/config/esp32/motion_warning_threshold"; // ngưỡng rung cảnh báo
+const char* MQTT_MOTION_DANGER_THRESHOLD_TOPIC = "terraguard/config/esp32/motion_danger_threshold";   // ngưỡng rung nguy hiểm
 const char* MQTT_CLIENT_ID = "ESP32-TG042";
 
-// Chu kỳ gửi dữ liệu lên MQTT (ms). Giảm số này để gửi nhanh hơn,
-// nhưng đừng đặt quá thấp (<100ms) vì I2C + WiFi cần thời gian xử lý.
+// Chu kỳ gửi dữ liệu lên MQTT (ms).
 const unsigned long PUBLISH_INTERVAL_MS = 500;
 
 WiFiClient espClient;
@@ -170,34 +187,32 @@ PubSubClient mqttClient(espClient);
 
 // ---------- Cảm biến độ ẩm đất (analog) ----------
 // CHỈ dùng chân ADC1 (32,33,34,35,36,39) vì ADC2 xung đột với WiFi trên ESP32.
-// GPIO34 là chân input-only, rất phù hợp cho cảm biến analog.
 #define SOIL_PIN 34
 const int SOIL_SAMPLES = 20;   // số lần đọc lấy trung bình để giảm nhiễu ADC
 
 // GIÁ TRỊ HIỆU CHUẨN - BẮT BUỘC chỉnh lại theo cảm biến thật của bạn:
-//   1. Nạp code, mở Serial Monitor, để cảm biến HOÀN TOÀN KHÔ TRONG KHÔNG KHÍ
-//      -> ghi lại giá trị "Soil RAW" in ra, gán vào SOIL_ADC_DRY.
-//   2. Nhúng đầu đo cảm biến vào NƯỚC hoặc đất thật rất ẩm/sũng nước
-//      -> ghi lại giá trị "Soil RAW", gán vào SOIL_ADC_WET.
-// Cảm biến điện trở (loại rẻ, 2 chân lộ đồng): khô = giá trị ADC CAO, ướt = giá trị ADC THẤP.
-// Cảm biến điện dung (capacitive, có chip): thường ngược lại (khô = THẤP, ướt = CAO)
-// -> nếu thấy % ẩm bị đảo ngược so với thực tế, chỉ cần đổi chỗ 2 giá trị dưới đây.
-int SOIL_ADC_DRY = 3000;  // giá trị ADC đo được khi đất/cảm biến khô hoàn toàn
-int SOIL_ADC_WET = 1200;  // giá trị ADC đo được khi đất/cảm biến ướt sũng nước
+//   1. Để cảm biến khô trong không khí -> ghi lại "Soil RAW" -> gán SOIL_ADC_DRY.
+//   2. Nhúng vào nước/đất ướt sũng -> ghi lại "Soil RAW" -> gán SOIL_ADC_WET.
+// Cảm biến điện trở: khô = ADC CAO, ướt = ADC THẤP. Điện dung: thường ngược lại.
+int SOIL_ADC_DRY = 3000;
+int SOIL_ADC_WET = 1200;
 
 // ---------- Cảm biến siêu âm AJ-SR04M (đo mực nước) ----------
-// Chế độ Trig/Echo (giống HC-SR04). Tầm đo AJ-SR04M ~ 20cm - 450cm.
+// Chế độ Trig/Echo (R27 để trống). Tầm đo AJ-SR04M ~ 20cm - 450cm.
+// Datasheet: nếu không có echo trở về, chân ECHO tự kéo LOW sau 60ms.
 #define TRIG_PIN 27
 #define ECHO_PIN 26
-const int ULTRASONIC_SAMPLES = 5;          // số lần đo lấy trung bình mỗi chu kỳ
-const unsigned long ECHO_TIMEOUT_US = 60000UL;  // timeout ~30ms (~5m), tránh treo code nếu không có echo
+const int ULTRASONIC_SAMPLES = 3;                  // giảm số mẫu vì mỗi mẫu cần nghỉ lâu hơn
+const unsigned long ECHO_TIMEOUT_US = 65000UL;     // 65ms: lớn hơn 60ms timeout nội bộ của module 1 chút
+const unsigned long ULTRASONIC_SAMPLE_GAP_MS = 65; // khoảng nghỉ giữa 2 lần trigger, PHẢI >= 60ms theo datasheet
 
 // Khoảng cách cố định từ cảm biến xuống MẶT NƯỚC lúc mực nước bình thường (cm).
-// Giá trị này có thể được web gửi xuống qua topic MQTT_CONFIG_TOPIC và sẽ được
-// LƯU LẠI (Preferences/NVS) để không bị mất khi ESP32 mất điện / khởi động lại.
+// Có thể được web gửi xuống qua MQTT_CONFIG_TOPIC, lưu vào Preferences/NVS.
 float baselineDistanceCm = 50.0f;
 float soilHumidityWarningThreshold = 80.0f;  // cảnh báo khi độ ẩm đất >= ngưỡng
 float waterLevelWarningThreshold = 10.0f;    // cảnh báo khi mực nước dâng >= ngưỡng (cm)
+float motionWarningThreshold = 0.5f;          // ngưỡng rung cảnh báo
+float motionDangerThreshold = 2.0f;           // ngưỡng rung nguy hiểm
 Preferences preferences;
 
 // ---------- ADXL345 ----------
@@ -210,12 +225,6 @@ Preferences preferences;
 #define ADXL_DATAX0        0x32   // 6 byte: X Y Z (little-endian)
 
 const float ADXL_SCALE = 0.0039;             // g/LSB (full resolution)
-const float ADXL_MOVEMENT_WARNING = 2.1f;    // mức rung cảnh báo nhẹ
-const float ADXL_MOVEMENT_DANGER = 3.1f;     // mức rung cảnh báo nặng
-
-struct AdxlData {
-  float x, y, z;  // g
-};
 
 uint8_t adxlAddr = ADXL_ADDR_DEFAULT;
 bool adxlOk = false;
@@ -227,9 +236,9 @@ unsigned long lastPublish = 0;
 unsigned long lastMqttRetry = 0;
 
 // ---------- Lọc & chống nhiễu ----------
-const int CALIBRATION_SAMPLES = 100;   // số mẫu lấy để hiệu chuẩn baseline
-const int MOVEMENT_FILTER_WINDOW = 8;  // số mẫu trung bình trượt cho "movement"
-const int STATE_CONFIRM_COUNT = 3;     // số mẫu liên tiếp cùng mức mới đổi trạng thái
+const int CALIBRATION_SAMPLES = 100;
+const int MOVEMENT_FILTER_WINDOW = 8;
+const int STATE_CONFIRM_COUNT = 3;
 
 float movementBuffer[MOVEMENT_FILTER_WINDOW];
 int movementBufferIndex = 0;
@@ -253,14 +262,15 @@ float readUltrasonicOnce() {
   return duration * 0.0343f / 2.0f;  // tốc độ âm thanh ~343 m/s
 }
 
-// Đo nhiều lần, bỏ qua các lần lỗi, lấy trung bình để giảm nhiễu/đọc nhầm
+// Đo nhiều lần, nghỉ đủ lâu giữa các lần (>=60ms theo datasheet) để module
+// kịp reset trạng thái, tránh trigger chồng lên chu kỳ đo trước gây đọc sai.
 float readUltrasonicDistanceCm() {
   float sum = 0;
   int validCount = 0;
   for (int i = 0; i < ULTRASONIC_SAMPLES; i++) {
     float d = readUltrasonicOnce();
     if (d > 0) { sum += d; validCount++; }
-    delay(10);
+    delay(ULTRASONIC_SAMPLE_GAP_MS);
   }
   if (validCount == 0) return -1;
   return sum / validCount;
@@ -276,8 +286,6 @@ int readSoilRaw() {
   return sum / SOIL_SAMPLES;
 }
 
-// Quy đổi giá trị ADC thô sang % độ ẩm (0-100%), có giới hạn (constrain) để
-// không bị âm hoặc vượt 100% khi cảm biến chưa hiệu chuẩn khớp hoàn toàn.
 float soilRawToPercent(int raw) {
   float percent = (float)(SOIL_ADC_DRY - raw) * 100.0f / (float)(SOIL_ADC_DRY - SOIL_ADC_WET);
   if (percent < 0) percent = 0;
@@ -360,7 +368,7 @@ void connectWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-// Nhận message MQTT từ topic đã subscribe (dùng cho MQTT_CONFIG_TOPIC)
+// Nhận message MQTT từ các topic config đã subscribe
 void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
   String topicStr = String(topic);
   String msg;
@@ -369,7 +377,7 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
 
   if (topicStr == MQTT_CONFIG_TOPIC) {
     float newBaseline = msg.toFloat();
-    if (newBaseline > 0 && newBaseline < 500) {  // giới hạn hợp lý theo tầm đo AJ-SR04M
+    if (newBaseline > 0 && newBaseline < 500) {
       baselineDistanceCm = newBaseline;
       preferences.putFloat("baseline", baselineDistanceCm);
       Serial.printf("[MQTT] Da nhan khoang cach co dinh moi tu web: %.1f cm (da luu vao bo nho)\n",
@@ -385,10 +393,10 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
     if (threshold >= 0 && threshold <= 100) {
       soilHumidityWarningThreshold = threshold;
       preferences.putFloat("soil_thresh", soilHumidityWarningThreshold);
-      Serial.printf("[MQTT] Da nhan ngưỡng độ ẩm cảnh báo: %.1f%% (đã lưu)\n",
+      Serial.printf("[MQTT] Da nhan nguong do am canh bao: %.1f%% (da luu)\n",
                     soilHumidityWarningThreshold);
     } else {
-      Serial.printf("[MQTT] Gia tri ngưỡng độ ẩm khong hop le: \"%s\"\n", msg.c_str());
+      Serial.printf("[MQTT] Gia tri nguong do am khong hop le: \"%s\"\n", msg.c_str());
     }
     return;
   }
@@ -398,10 +406,34 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
     if (threshold >= 0 && threshold <= 200) {
       waterLevelWarningThreshold = threshold;
       preferences.putFloat("water_thresh", waterLevelWarningThreshold);
-      Serial.printf("[MQTT] Da nhan ngưỡng mực nước cảnh báo: %.1f cm (đã lưu)\n",
+      Serial.printf("[MQTT] Da nhan nguong muc nuoc canh bao: %.1f cm (da luu)\n",
                     waterLevelWarningThreshold);
     } else {
-      Serial.printf("[MQTT] Gia tri ngưỡng mực nước khong hop le: \"%s\"\n", msg.c_str());
+      Serial.printf("[MQTT] Gia tri nguong muc nuoc khong hop le: \"%s\"\n", msg.c_str());
+    }
+    return;
+  }
+
+  if (topicStr == MQTT_MOTION_WARNING_THRESHOLD_TOPIC) {
+    float threshold = msg.toFloat();
+    if (threshold >= 0 && threshold <= 20) {
+      motionWarningThreshold = threshold;
+      preferences.putFloat("motion_warn_thresh", motionWarningThreshold);
+      Serial.printf("[MQTT] Da nhan nguong rung canh bao: %.2f g (da luu)\n", motionWarningThreshold);
+    } else {
+      Serial.printf("[MQTT] Gia tri nguong rung canh bao khong hop le: \"%s\"\n", msg.c_str());
+    }
+    return;
+  }
+
+  if (topicStr == MQTT_MOTION_DANGER_THRESHOLD_TOPIC) {
+    float threshold = msg.toFloat();
+    if (threshold >= 0 && threshold <= 20) {
+      motionDangerThreshold = threshold;
+      preferences.putFloat("motion_danger_thresh", motionDangerThreshold);
+      Serial.printf("[MQTT] Da nhan nguong rung nguy hiem: %.2f g (da luu)\n", motionDangerThreshold);
+    } else {
+      Serial.printf("[MQTT] Gia tri nguong rung nguy hiem khong hop le: \"%s\"\n", msg.c_str());
     }
   }
 }
@@ -415,9 +447,13 @@ void connectMQTT() {
       mqttClient.subscribe(MQTT_CONFIG_TOPIC);
       mqttClient.subscribe(MQTT_SOIL_THRESHOLD_TOPIC);
       mqttClient.subscribe(MQTT_WATER_THRESHOLD_TOPIC);
+      mqttClient.subscribe(MQTT_MOTION_WARNING_THRESHOLD_TOPIC);
+      mqttClient.subscribe(MQTT_MOTION_DANGER_THRESHOLD_TOPIC);
       Serial.printf("Da subscribe topic config: %s\n", MQTT_CONFIG_TOPIC);
-      Serial.printf("Da subscribe topic ngưỡng độ ẩm: %s\n", MQTT_SOIL_THRESHOLD_TOPIC);
-      Serial.printf("Da subscribe topic ngưỡng nước: %s\n", MQTT_WATER_THRESHOLD_TOPIC);
+      Serial.printf("Da subscribe topic nguong do am: %s\n", MQTT_SOIL_THRESHOLD_TOPIC);
+      Serial.printf("Da subscribe topic nguong nuoc: %s\n", MQTT_WATER_THRESHOLD_TOPIC);
+      Serial.printf("Da subscribe topic nguong rung canh bao: %s\n", MQTT_MOTION_WARNING_THRESHOLD_TOPIC);
+      Serial.printf("Da subscribe topic nguong rung nguy hiem: %s\n", MQTT_MOTION_DANGER_THRESHOLD_TOPIC);
     } else {
       Serial.printf("MQTT connect fail, rc=%d. Thu lai sau 2s\n", mqttClient.state());
       delay(2000);
@@ -429,7 +465,7 @@ void connectMQTT() {
 void reconnectMQTTIfNeeded() {
   if (mqttClient.connected()) return;
   unsigned long now = millis();
-  if (now - lastMqttRetry < 2000UL) return;  // thử lại mỗi 2s, không delay()
+  if (now - lastMqttRetry < 2000UL) return;
   lastMqttRetry = now;
 
   Serial.printf("MQTT mat ket noi, dang thu ket noi lai toi %s...\n", MQTT_BROKER);
@@ -438,6 +474,8 @@ void reconnectMQTTIfNeeded() {
     mqttClient.subscribe(MQTT_CONFIG_TOPIC);
     mqttClient.subscribe(MQTT_SOIL_THRESHOLD_TOPIC);
     mqttClient.subscribe(MQTT_WATER_THRESHOLD_TOPIC);
+    mqttClient.subscribe(MQTT_MOTION_WARNING_THRESHOLD_TOPIC);
+    mqttClient.subscribe(MQTT_MOTION_DANGER_THRESHOLD_TOPIC);
   } else {
     Serial.printf("MQTT ket noi lai that bai, rc=%d\n", mqttClient.state());
   }
@@ -445,10 +483,8 @@ void reconnectMQTTIfNeeded() {
 
 // ================== Xử lý dữ liệu ==================
 
-// Hiệu chuẩn baseline bằng TRUNG BÌNH nhiều mẫu (chặn/blocking, chỉ chạy 1 lần
-// lúc setup). Yêu cầu ĐỂ CẢM BIẾN ĐỨNG YÊN trong lúc hiệu chuẩn, vì đây chính
-// là mốc "0" để so sánh độ rung về sau. Lấy trung bình nhiều mẫu giúp loại bỏ
-// nhiễu ngẫu nhiên của một lần đọc đơn lẻ (nguyên nhân gây báo động giả trước đây).
+// Hiệu chuẩn baseline bằng TRUNG BÌNH nhiều mẫu (chặn/blocking, chỉ chạy 1
+// lần lúc setup). GIỮ CẢM BIẾN ĐỨNG YÊN trong lúc hiệu chuẩn.
 void calibrateBaseline() {
   Serial.printf("Dang hieu chuan baseline (%d mau, giu yen cam bien)...\n", CALIBRATION_SAMPLES);
   double sumX = 0, sumY = 0, sumZ = 0;
@@ -473,8 +509,7 @@ void calibrateBaseline() {
                 adxlBaseX, adxlBaseY, adxlBaseZ, count);
 }
 
-// Trung bình trượt (moving average) để làm mượt giá trị movement, giảm nhiễu
-// tức thời khiến trạng thái nhảy loạn giữa warning/danger dù không rung thật.
+// Trung bình trượt (moving average) để làm mượt giá trị movement
 float filterMovement(float rawMovement) {
   movementBuffer[movementBufferIndex] = rawMovement;
   movementBufferIndex = (movementBufferIndex + 1) % MOVEMENT_FILTER_WINDOW;
@@ -493,13 +528,12 @@ float calculateMovement(const AdxlData &a) {
 }
 
 const char* motionStateFromMovement(float movement) {
-  if (movement < ADXL_MOVEMENT_WARNING) return "stable";
-  if (movement < ADXL_MOVEMENT_DANGER) return "warning";
+  if (movement < motionWarningThreshold) return "stable";
+  if (movement < motionDangerThreshold) return "warning";
   return "danger";
 }
 
-// Hysteresis: chỉ CHỐT trạng thái mới khi nó lặp lại liên tiếp STATE_CONFIRM_COUNT
-// lần, để tránh 1 mẫu nhiễu đơn lẻ làm nhảy trạng thái tức thời.
+// Hysteresis: chỉ CHỐT trạng thái mới khi lặp lại liên tiếp STATE_CONFIRM_COUNT lần
 const char* confirmState(const char* newState) {
   if (strcmp(newState, pendingState) == 0) {
     pendingStateCount++;
@@ -524,7 +558,7 @@ String buildSensorPayload(const AdxlData &a, float movement, const char* state, 
            "\"soilHumidity\":%.1f,\"soilThreshold\":%.1f,\"soilWarning\":%s,"
            "\"adxl345\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f,\"magnitude\":%.3f,"
            "\"baseline\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f}},"
-           "\"movement\":%.3f,\"motionState\":\"%s\",\"warning\":%s,"
+           "\"movement\":%.3f,\"motionState\":\"%s\",\"motionWarningThreshold\":%.2f,\"motionDangerThreshold\":%.2f,\"warning\":%s,"
            "\"waterLevel\":{\"distanceCm\":%.1f,\"levelChangeCm\":%.1f,"
            "\"baselineDistanceCm\":%.1f,\"valid\":%s,\"thresholdCm\":%.1f,\"waterWarning\":%s},"
            "\"rainMm\":3.6}",
@@ -533,7 +567,7 @@ String buildSensorPayload(const AdxlData &a, float movement, const char* state, 
            a.x, a.y, a.z,
            sqrtf(a.x * a.x + a.y * a.y + a.z * a.z),
            adxlBaseX, adxlBaseY, adxlBaseZ,
-           movement, state, warning ? "true" : "false",
+           movement, state, motionWarningThreshold, motionDangerThreshold, warning ? "true" : "false",
            distanceCm, waterLevelCm, baselineDistanceCm, waterLevelValid ? "true" : "false",
            waterLevelWarningThreshold, waterWarning ? "true" : "false");
   return String(payload);
@@ -545,8 +579,8 @@ void setup() {
   delay(500);
   Wire.begin(SDA_PIN, SCL_PIN, I2C_FREQ);
 
-  analogReadResolution(12);            // ESP32: 0-4095
-  analogSetPinAttenuation(SOIL_PIN, ADC_11db);  // đọc được đủ dải 0-3.3V
+  analogReadResolution(12);
+  analogSetPinAttenuation(SOIL_PIN, ADC_11db);
   pinMode(SOIL_PIN, INPUT);
 
   pinMode(TRIG_PIN, OUTPUT);
@@ -560,16 +594,18 @@ void setup() {
   baselineDistanceCm = preferences.getFloat("baseline", 50.0f);
   soilHumidityWarningThreshold = preferences.getFloat("soil_thresh", 80.0f);
   waterLevelWarningThreshold = preferences.getFloat("water_thresh", 10.0f);
+  motionWarningThreshold = preferences.getFloat("motion_warn_thresh", 0.5f);
+  motionDangerThreshold = preferences.getFloat("motion_danger_thresh", 2.0f);
   Serial.printf("Khoang cach co dinh (baseline) hien tai: %.1f cm\n", baselineDistanceCm);
-  Serial.printf("Ngưỡng cảnh báo độ ẩm: %.1f%%\n", soilHumidityWarningThreshold);
-  Serial.printf("Ngưỡng cảnh báo mực nước: %.1f cm\n", waterLevelWarningThreshold);
+  Serial.printf("Nguong canh bao do am: %.1f%%\n", soilHumidityWarningThreshold);
+  Serial.printf("Nguong canh bao muc nuoc: %.1f cm\n", waterLevelWarningThreshold);
+  Serial.printf("Nguong rung canh bao: %.2f g\n", motionWarningThreshold);
+  Serial.printf("Nguong rung nguy hiem: %.2f g\n", motionDangerThreshold);
 
   connectWiFi();
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
-  // QUAN TRỌNG: tăng buffer vì payload JSON của ta > 256 byte mặc định.
-  // Với thêm các ngưỡng cảnh báo, payload có thể vượt 512 byte nên dùng 1024.
   mqttClient.setBufferSize(1024);
 
   connectMQTT();
@@ -578,7 +614,7 @@ void setup() {
   Serial.println(adxlOk ? "ADXL345: OK" : "ADXL345: KHONG TIM THAY (kiem tra day/dia chi)");
 
   if (adxlOk) {
-    calibrateBaseline();  // BẮT BUỘC: giữ yên cảm biến trong lúc này
+    calibrateBaseline();
   }
   Serial.println();
 }
@@ -586,7 +622,6 @@ void setup() {
 void loop() {
   readGpsData();
 
-  // Giữ WiFi/MQTT sống, tự reconnect nếu rớt
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
@@ -601,9 +636,9 @@ void loop() {
 
     if (readADXL345(a)) {
       float rawMovement = calculateMovement(a);
-      float movement = filterMovement(rawMovement);          // đã làm mượt
+      float movement = filterMovement(rawMovement);
       const char* rawState = motionStateFromMovement(movement);
-      const char* state = confirmState(rawState);             // đã chống dội
+      const char* state = confirmState(rawState);
 
       Serial.printf("ADXL345 | Acc[g] X:%7.3f Y:%7.3f Z:%7.3f | Raw:%.3f Filtered:%.3f | State: %s\n",
                     a.x, a.y, a.z, rawMovement, movement, state);
@@ -619,7 +654,6 @@ void loop() {
       bool waterWarning = false;
 
       if (waterLevelValid) {
-        // Khoảng cách GIẢM so với baseline => nước dâng lên => levelChange DƯƠNG
         waterLevelCm = baselineDistanceCm - distanceCm;
         waterWarning = (waterLevelCm >= waterLevelWarningThreshold);
         Serial.printf("Muc nuoc | Khoang cach: %.1f cm | Baseline: %.1f cm | Thay doi: %.1f cm (%s)\n",
@@ -630,10 +664,10 @@ void loop() {
       }
 
       if (soilWarning) {
-        Serial.printf("CAM BIEN | CẢNH BÁO ĐỘ ẨM: %.1f%% >= %.1f%%\n", soilHumidity, soilHumidityWarningThreshold);
+        Serial.printf("CAM BIEN | CANH BAO DO AM: %.1f%% >= %.1f%%\n", soilHumidity, soilHumidityWarningThreshold);
       }
       if (waterWarning) {
-        Serial.printf("CAM BIEN | CẢNH BÁO MỰC NƯỚC: %.1f cm >= %.1f cm\n", waterLevelCm, waterLevelWarningThreshold);
+        Serial.printf("CAM BIEN | CANH BAO MUC NUOC: %.1f cm >= %.1f cm\n", waterLevelCm, waterLevelWarningThreshold);
       }
 
       String payload = buildSensorPayload(a, movement, state, soilHumidity,
@@ -645,7 +679,6 @@ void loop() {
         if (ok) {
           Serial.println("-> Da gui MQTT THANH CONG");
         } else {
-          // In rõ lý do có thể xảy ra để dễ debug thay vì im lặng "giả vờ" thành công
           Serial.printf("-> GUI MQTT THAT BAI! (payload dai %d byte, buffer hien tai %d byte)\n",
                         payload.length(), mqttClient.getBufferSize());
         }
