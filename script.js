@@ -10,6 +10,8 @@ const MQTT_SOIL_THRESHOLD_TOPIC = params.get("soilThresholdTopic") || "terraguar
 const MQTT_WATER_THRESHOLD_TOPIC = params.get("waterThresholdTopic") || "terraguard/config/esp32/water_threshold";
 const MQTT_MOTION_WARNING_THRESHOLD_TOPIC = params.get("motionWarningThresholdTopic") || "terraguard/config/esp32/motion_warning_threshold";
 const MQTT_MOTION_DANGER_THRESHOLD_TOPIC = params.get("motionDangerThresholdTopic") || "terraguard/config/esp32/motion_danger_threshold";
+const CAMERA_API_BASE = "https://ambassador-plan-foundations-theatre.trycloudflare.com";
+const CAMERA_STREAM_URL = `${CAMERA_API_BASE}/api/camera/stream`;
 const THRESHOLD_CONFIG_TOPICS = [
   MQTT_SOIL_THRESHOLD_TOPIC,
   MQTT_WATER_THRESHOLD_TOPIC,
@@ -94,6 +96,13 @@ const deviceIdEl = document.getElementById("deviceId");
 const topicNameEl = document.getElementById("topicName");
 const lastUpdateEl = document.getElementById("lastUpdate");
 const warningFlagEl = document.getElementById("warningFlag");
+const cameraStreamEl = document.getElementById("cameraStream");
+const cameraStatusEl = document.getElementById("cameraStatus");
+const cameraRefreshBtn = document.getElementById("cameraRefreshBtn");
+const cameraCaptureBtn = document.getElementById("cameraCaptureBtn");
+const latestCaptureImageEl = document.getElementById("latestCaptureImage");
+const latestCaptureMetaEl = document.getElementById("latestCaptureMeta");
+const cameraHistoryListEl = document.getElementById("cameraHistoryList");
 
 const logList = document.getElementById("logList");
 const canvas = document.getElementById("movementChart");
@@ -106,8 +115,295 @@ let gpsMap = null;
 let gpsMarker = null;
 let gpsCircle = null;
 let browserGpsWatchId = null;
+let cameraHistoryPoller = null;
 
 topicNameEl.textContent = MQTT_TOPIC;
+
+function reloadCameraStream() {
+  if (!cameraStreamEl) return;
+  if (cameraStatusEl) {
+    cameraStatusEl.textContent = "Đang tải stream camera...";
+    cameraStatusEl.classList.remove("error");
+  }
+
+  const timestamp = `?t=${Date.now()}`;
+  cameraStreamEl.src = `${CAMERA_STREAM_URL}${timestamp}`;
+}
+
+if (cameraStreamEl) {
+  cameraStreamEl.onerror = () => {
+    if (cameraStatusEl) {
+      cameraStatusEl.textContent = "Không thể tải stream camera. Kiểm tra máy chủ camera hoặc URL.";
+      cameraStatusEl.classList.add("error");
+    }
+  };
+
+  cameraStreamEl.onload = () => {
+    if (cameraStatusEl) {
+      cameraStatusEl.textContent = "Đang hiển thị camera trực tiếp";
+      cameraStatusEl.classList.remove("error");
+    }
+  };
+}
+
+function isImageFileName(filename) {
+  if (!filename || typeof filename !== "string") return false;
+  const lower = filename.toLowerCase();
+  return [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".gif"
+  ].some((ext) => lower.endsWith(ext));
+}
+
+function openCameraPreview(imageUrl, filename) {
+  const overlay = document.getElementById("cameraPreviewOverlay");
+  if (!overlay) return;
+
+  const previewImg = document.getElementById("cameraPreviewImage");
+  const previewName = document.getElementById("cameraPreviewName");
+
+  if (previewImg) previewImg.src = imageUrl;
+  if (previewName) previewName.textContent = filename;
+
+  overlay.classList.add("active");
+  document.body.style.overflow = "hidden";
+}
+
+function closeCameraPreview() {
+  const overlay = document.getElementById("cameraPreviewOverlay");
+  if (!overlay) return;
+  overlay.classList.remove("active");
+  document.body.style.overflow = "";
+}
+
+// Nút thoát xem ảnh lớn
+(function initCameraPreviewListeners() {
+  const closeBtn = document.getElementById("cameraPreviewClose");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", closeCameraPreview);
+  }
+
+  const overlay = document.getElementById("cameraPreviewOverlay");
+  if (overlay) {
+    // Click vào nền tối (backdrop) để thoát
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) {
+        closeCameraPreview();
+      }
+    });
+  }
+
+  // Nhấn Escape để thoát
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeCameraPreview();
+    }
+  });
+})();
+
+function buildCameraHistoryItem(filename, savedAt, imageUrl) {
+  const item = document.createElement("div");
+  item.className = "camera-history-item";
+
+  const img = document.createElement("img");
+  img.src = imageUrl;
+  img.alt = filename;
+  img.style.cursor = "pointer";
+  img.addEventListener("click", () => openCameraPreview(imageUrl, filename));
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const title = document.createElement("strong");
+  title.textContent = filename;
+
+  const time = document.createElement("span");
+  time.textContent = savedAt || "Ảnh lưu";
+
+  meta.appendChild(title);
+  meta.appendChild(time);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "camera-delete-btn";
+  deleteBtn.textContent = "Xóa";
+  deleteBtn.title = `Xóa ${filename}`;
+  deleteBtn.addEventListener("click", async () => {
+    await deleteCameraImage(filename);
+  });
+
+  item.appendChild(img);
+  item.appendChild(meta);
+  item.appendChild(deleteBtn);
+  return item;
+}
+
+async function deleteCameraImage(filename) {
+  if (!filename) return;
+
+  try {
+    const res = await fetch(`${CAMERA_API_BASE}/api/images/${encodeURIComponent(filename)}`, {
+      method: "DELETE",
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || "Không xóa được ảnh");
+    }
+
+    if (latestCaptureImageEl && latestCaptureImageEl.src.includes(encodeURIComponent(filename))) {
+      latestCaptureImageEl.removeAttribute("src");
+      latestCaptureImageEl.style.display = "none";
+      latestCaptureMetaEl.textContent = "Chưa có hình ảnh nào được lưu.";
+    }
+
+    const items = [...cameraHistoryListEl.children];
+    const target = items.find((node) => node.dataset.filename === filename);
+    if (target) {
+      target.remove();
+    }
+
+    showAlert({
+      type: "info",
+      title: "Đã xóa ảnh",
+      message: `Ảnh ${filename} đã được xóa khỏi lưu trữ.`,
+      key: `camera-delete-${filename}`
+    });
+
+    await loadCameraHistory();
+  } catch (error) {
+    console.error("[Camera] Delete failed:", error);
+    showAlert({
+      type: "warning",
+      title: "Không xóa được ảnh",
+      message: error.message || "Vui lòng thử lại.",
+      key: "camera-delete-fail"
+    });
+  }
+}
+
+function startCameraHistoryPolling() {
+  if (cameraHistoryPoller) clearInterval(cameraHistoryPoller);
+  cameraHistoryPoller = setInterval(() => {
+    loadCameraHistory();
+  }, 3000);
+}
+
+async function captureCurrentScene(reason = "manual") {
+  if (!CAMERA_API_BASE) return null;
+
+  try {
+    const response = await fetch(`${CAMERA_API_BASE}/api/capture`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "capture",
+        reason,
+        alert_id: reason === "manual" ? `manual-${Date.now()}` : `alert-${Date.now()}`,
+        ptz: { x: 0.0, y: 0.0 }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error("Server trả về lỗi khi chụp ảnh");
+    }
+
+    const result = await response.json();
+    if (!result || !result.data) {
+      throw new Error("Không có dữ liệu ảnh trả về");
+    }
+
+    const { filename, saved_at } = result.data;
+    const imageUrl = `${CAMERA_API_BASE}/api/images/${filename}`;
+    latestCaptureImageEl.src = imageUrl;
+    latestCaptureImageEl.style.display = "block";
+    latestCaptureMetaEl.textContent = `${saved_at || "Ảnh đã lưu"} · ${reason}`;
+
+    await loadCameraHistory();
+    return result;
+  } catch (error) {
+    console.error("[Camera] Capture failed:", error);
+    showAlert({
+      type: "warning",
+      title: "Chụp hiện trường thất bại",
+      message: "Không thể lưu ảnh từ camera lúc này.",
+      key: "camera-capture-fail"
+    });
+    return null;
+  }
+}
+
+async function loadCameraHistory() {
+  try {
+    const response = await fetch(`${CAMERA_API_BASE}/api/images`, {
+      method: "GET",
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const images = Array.isArray(data.images)
+      ? data.images
+      : Array.isArray(data.data?.images)
+        ? data.data.images
+        : Array.isArray(data)
+          ? data
+          : [];
+
+    cameraHistoryListEl.innerHTML = "";
+
+    const imageEntries = images
+      .map((image) => {
+        const itemData = typeof image === "string"
+          ? { filename: image, saved_at: "Ảnh lưu", url: `${CAMERA_API_BASE}/api/images/${image}` }
+          : image;
+
+        const filename = itemData.filename || itemData.name || "image";
+        if (!isImageFileName(filename)) return null;
+
+        const imageUrl = itemData.url
+          ? (String(itemData.url).startsWith("http") ? itemData.url : `${CAMERA_API_BASE}${itemData.url}`)
+          : `${CAMERA_API_BASE}/api/images/${encodeURIComponent(filename)}`;
+
+        return { filename, saved_at: itemData.saved_at || "Ảnh lưu", imageUrl };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        // Sắp xếp ảnh mới nhất lên trên
+        const timeA = new Date(a.saved_at || 0).getTime();
+        const timeB = new Date(b.saved_at || 0).getTime();
+        // Nếu cả hai đều có thời gian hợp lệ, so sánh thời gian
+        const validA = !isNaN(timeA) && timeA > 0;
+        const validB = !isNaN(timeB) && timeB > 0;
+        if (validA && validB) return timeB - timeA;
+        if (validA && !validB) return -1;
+        if (!validA && validB) return 1;
+        // Nếu không có thời gian hợp lệ, sắp xếp theo tên file giảm dần (tên mới nhất lên trên)
+        return b.filename.localeCompare(a.filename);
+      });
+
+    if (!imageEntries.length) {
+      cameraHistoryListEl.innerHTML = '<div class="camera-history-item"><div class="meta"><strong>Chưa có ảnh nào</strong><span>Hình ảnh sẽ xuất hiện sau khi có cảnh báo hoặc chụp thủ công.</span></div></div>';
+      return;
+    }
+
+    imageEntries.forEach((entry) => {
+      const item = buildCameraHistoryItem(entry.filename, entry.saved_at, entry.imageUrl);
+      item.dataset.filename = entry.filename;
+      cameraHistoryListEl.appendChild(item);
+    });
+  } catch (error) {
+    console.warn("[Camera] Không tải được lịch sử ảnh:", error);
+    cameraHistoryListEl.innerHTML = '<div class="camera-history-item"><div class="meta"><strong>Không lấy được thư viện ảnh</strong><span>Vui lòng kiểm tra CORS hoặc backend camera.</span></div></div>';
+  }
+}
 
 function stopBrowserGpsFallback() {
   if (browserGpsWatchId !== null && navigator.geolocation) {
@@ -190,6 +486,9 @@ function updateGpsMap(lat, lon) {
 
 initMap();
 startBrowserGpsFallback();
+reloadCameraStream();
+loadCameraHistory();
+startCameraHistoryPolling();
 
 // ================== TRẠNG THÁI ==================
 let history = []; // { t: Date, movement: number, state: string }
@@ -539,6 +838,10 @@ function handleSensorData(data) {
   const state = data.motionState || classifyMovement(movement);
   motionWarningState = data.warning ?? state !== "stable";
 
+  if (state === "warning" || state === "danger") {
+    captureCurrentScene(state === "danger" ? "motion-danger" : "motion-warning");
+  }
+
   triggerReloadEffect();
   movementValue.textContent = movement.toFixed(2);
   movementKpiEl.textContent = movement.toFixed(2);
@@ -629,6 +932,14 @@ function updateWaterLevel(wl) {
 
   updateWarningSummary();
 }
+
+cameraRefreshBtn.addEventListener("click", () => {
+  reloadCameraStream();
+});
+
+cameraCaptureBtn.addEventListener("click", () => {
+  captureCurrentScene("manual");
+});
 
 soilThresholdInput.addEventListener("input", () => {
   updateThresholdDisplays();

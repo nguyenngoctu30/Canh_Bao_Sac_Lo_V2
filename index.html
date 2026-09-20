@@ -232,6 +232,44 @@
       </div>
     </section>
 
+    <section class="card camera-card">
+      <div class="chart-header">
+        <h3>Camera hiện trường</h3>
+        <div class="legend">
+          <span class="legend-item"><i class="dot stable"></i>Live</span>
+        </div>
+      </div>
+
+      <div class="camera-frame-wrap">
+        <img id="cameraStream" class="camera-stream" src="https://ambassador-plan-foundations-theatre.trycloudflare.com/api/camera/stream" alt="Camera hiện trường" />
+        <div id="cameraStatus" class="camera-status">Đang chờ stream camera...</div>
+      </div>
+
+      <div class="camera-controls">
+        <button id="cameraRefreshBtn" type="button">Làm mới stream</button>
+        <button id="cameraCaptureBtn" class="accent" type="button">Chụp hiện trường</button>
+      </div>
+
+      <div class="camera-capture-preview">
+        <h4>Ảnh đã ghi lúc cảnh báo</h4>
+        <img id="latestCaptureImage" src="" alt="Ảnh chụp gần nhất" />
+        <p id="latestCaptureMeta">Chưa có hình ảnh nào được lưu.</p>
+      </div>
+
+      <div class="camera-history">
+        <h4>Lịch sử ảnh</h4>
+        <div id="cameraHistoryList" class="camera-history-list"></div>
+      </div>
+    </section>
+
+    <div id="cameraPreviewOverlay" class="camera-preview-overlay" aria-hidden="true">
+      <div class="camera-preview-panel">
+        <button id="cameraPreviewClose" class="camera-preview-close" type="button" aria-label="Thoát xem ảnh">×</button>
+        <img id="cameraPreviewImage" src="" alt="Xem ảnh lớn" />
+        <div id="cameraPreviewName" class="camera-preview-name">Ảnh cảnh báo</div>
+      </div>
+    </div>
+
     <section class="card weather-card">
       <div class="chart-header">
         <h3>Thời tiết tại vị trí thiết bị</h3>

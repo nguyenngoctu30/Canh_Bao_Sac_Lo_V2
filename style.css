@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #040b12;
   --bg-2: #0c1720;
   --bg-3: #101d2b;
@@ -1098,6 +1098,303 @@ canvas {
 
 .hazard-status.error { color: var(--danger); }
 
+/* ---------- Camera hiện trường ---------- */
+.camera-card {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow: visible;
+  margin-bottom: 22px;
+}
+
+.camera-card.card {
+  overflow: visible;
+}
+
+.camera-frame-wrap {
+  position: relative;
+  border: 1px solid rgba(94, 234, 212, 0.15);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(7, 10, 15, 0.92);
+  aspect-ratio: 16 / 9;
+  box-shadow: inset 0 2px 20px rgba(0, 0, 0, 0.3);
+}
+
+.camera-status {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(7, 10, 15, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.camera-status.error {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.45);
+}
+
+.camera-stream {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: radial-gradient(ellipse at center, rgba(30, 41, 59, 0.5), rgba(7, 10, 15, 0.95));
+}
+
+/* Nút điều khiển camera */
+.camera-controls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.camera-controls button {
+  flex: 1;
+  min-width: 140px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+  color: var(--text);
+  padding: 11px 16px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.camera-controls button:hover {
+  border-color: rgba(94, 234, 212, 0.4);
+  background: rgba(94, 234, 212, 0.08);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(94, 234, 212, 0.1);
+}
+
+.camera-controls button.accent {
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.18), rgba(251, 191, 36, 0.14));
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.camera-controls button.accent:hover {
+  border-color: rgba(248, 113, 113, 0.65);
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.28), rgba(251, 191, 36, 0.22));
+  box-shadow: 0 6px 20px rgba(248, 113, 113, 0.15);
+}
+
+/* Ảnh chụp mới nhất */
+.camera-capture-preview {
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding-top: 16px;
+}
+
+.camera-history {
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding-top: 16px;
+}
+
+.camera-capture-preview h4,
+.camera-history h4 {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  font-weight: 800;
+}
+
+#latestCaptureImage {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 14px;
+  background: rgba(7, 10, 15, 0.85);
+  border: 1px solid rgba(255,255,255,0.08);
+  display: none;
+}
+
+#latestCaptureMeta {
+  margin: 10px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Lịch sử ảnh - Gallery Grid */
+.camera-history-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.camera-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.camera-history-item:hover {
+  border-color: rgba(94, 234, 212, 0.3);
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.5);
+  transform: translateY(-2px);
+}
+
+.camera-history-item img {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  display: block;
+  cursor: pointer;
+  transition: filter 0.2s ease, opacity 0.2s ease;
+  background: rgba(7, 10, 15, 0.7);
+}
+
+.camera-history-item img:hover {
+  filter: brightness(1.12);
+  opacity: 0.92;
+}
+
+.camera-history-item .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px 6px;
+  min-width: 0;
+}
+
+.camera-history-item .meta strong {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.camera-history-item .meta span {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.camera-delete-btn {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.04);
+  border-radius: 0;
+  background: transparent;
+  color: rgba(252, 165, 165, 0.7);
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.camera-delete-btn:hover {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fecaca;
+}
+
+.camera-preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.camera-preview-overlay.active {
+  display: flex;
+  animation: overlayFadeIn 0.3s ease forwards;
+}
+
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.camera-preview-panel {
+  position: relative;
+  max-width: 900px;
+  width: min(92vw, 900px);
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.7), 0 0 0 1px rgba(94, 234, 212, 0.06);
+  animation: panelScaleIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes panelScaleIn {
+  from { opacity: 0; transform: scale(0.92) translateY(16px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.camera-preview-panel img {
+  width: 100%;
+  max-height: 78vh;
+  object-fit: contain;
+  border-radius: 14px;
+  background: rgba(7, 10, 15, 0.9);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.camera-preview-name {
+  margin-top: 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+.camera-preview-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--text);
+  font-size: 24px;
+  cursor: pointer;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  z-index: 10;
+}
+
+.camera-preview-close:hover {
+  background: rgba(248, 113, 113, 0.18);
+  border-color: rgba(248, 113, 113, 0.5);
+  transform: scale(1.08);
+}
+
 .hazard-list {
   display: flex;
   flex-direction: column;
@@ -1254,5 +1551,18 @@ canvas {
 
   .hazard-source-link {
     align-self: flex-start;
+  }
+
+  .camera-history-list {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .camera-controls button {
+    min-width: 0;
+  }
+
+  .camera-frame-wrap {
+    aspect-ratio: 4 / 3;
   }
 }
