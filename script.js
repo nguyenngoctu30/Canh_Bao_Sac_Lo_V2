@@ -1,4 +1,12 @@
 // ================== CẤU HÌNH ==================
+// Ẩn trang loading khi mọi thứ đã load xong (có delay nhẹ để tạo cảm giác mượt)
+window.addEventListener("load", () => {
+  setTimeout(() => {
+    const loader = document.getElementById("pageLoader");
+    if (loader) loader.classList.add("hidden");
+  }, 600); // Đợi 600ms
+});
+
 // Cho phép đổi topic bằng query string: index.html?topic=terraguard/sensors/esp32
 const params = new URLSearchParams(window.location.search);
 
@@ -293,8 +301,18 @@ function startCameraHistoryPolling() {
   }, 3000);
 }
 
+const captureCooldowns = new Map();
 async function captureCurrentScene(reason = "manual") {
   if (!CAMERA_API_BASE) return null;
+
+  if (reason !== "manual") {
+    const now = Date.now();
+    const last = captureCooldowns.get(reason) || 0;
+    if (now - last < 10000) { // 10 giây cooldown để không bị spam chụp ảnh
+      return null;
+    }
+    captureCooldowns.set(reason, now);
+  }
 
   try {
     const response = await fetch(`${CAMERA_API_BASE}/api/capture`, {
@@ -866,6 +884,7 @@ function updateSoilStatus(humidity) {
     soilStatusText.textContent = `CẢNH BÁO: độ ẩm vượt ngưỡng (${humidity.toFixed(1)}% > ${threshold.toFixed(0)}%)`;
     soilKpiNoteEl.textContent = "Cảnh báo vượt ngưỡng";
     soilWarningState = true;
+    captureCurrentScene("soil-warning");
     showAlert({
       type: "danger",
       title: "Cảnh báo độ ẩm vượt ngưỡng",
@@ -913,6 +932,7 @@ function updateWaterLevel(wl) {
     waterLevelLabel.textContent = `Mực nước DÂNG quá ngưỡng (${change.toFixed(1)} cm > ${threshold.toFixed(1)} cm)`;
     waterKpiNoteEl.textContent = "Cảnh báo dâng nước";
     waterWarningState = true;
+    captureCurrentScene("water-warning");
     showAlert({
       type: "danger",
       title: "Cảnh báo mực nước dâng",

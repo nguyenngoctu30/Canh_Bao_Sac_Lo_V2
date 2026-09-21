@@ -1,26 +1,44 @@
 <!DOCTYPE html>
 <html lang="vi">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TerraGuard - Giám sát độ rung đất ESP32</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TerraGuard - Giám sát độ rung đất ESP32</title>
+  <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
+  <!-- Page Loader -->
+  <div id="pageLoader" class="page-loader">
+    <div class="loader-content">
+      <div class="spinner"></div>
+      <div class="loader-text">Đang khởi tạo hệ thống...</div>
+    </div>
+  </div>
+
 
   <header class="topbar">
     <div class="brand">
-      <span class="logo">🌱</span>
-      <div>
+      <div class="logo">
+        <span>🌱</span>
+      </div>
+
+      <div class="brand-info">
         <h1>TerraGuard</h1>
-        <p class="subtitle">Giám sát độ rung đất &amp; cảm biến ESP32</p>
+        <p class="subtitle">Hệ thống giám sát địa chất & IoT</p>
       </div>
     </div>
+
     <div class="conn-status" id="connStatus">
-      <span class="dot" id="connDot"></span>
-      <span id="connText">Đang kết nối MQTT...</span>
+      <span class="status-indicator" id="connDot"></span>
+      <div class="status-info">
+        <span class="status-label">MQTT</span>
+        <span id="connText">Đang kết nối...</span>
+      </div>
     </div>
   </header>
+
 
   <main class="container">
 
@@ -68,9 +86,15 @@
           <div class="axis"><span class="axis-label z">Z</span><span id="axZ">0.000</span></div>
         </div>
         <div class="bar-wrap">
-          <div class="bar"><div class="bar-fill x" id="barX"></div></div>
-          <div class="bar"><div class="bar-fill y" id="barY"></div></div>
-          <div class="bar"><div class="bar-fill z" id="barZ"></div></div>
+          <div class="bar">
+            <div class="bar-fill x" id="barX"></div>
+          </div>
+          <div class="bar">
+            <div class="bar-fill y" id="barY"></div>
+          </div>
+          <div class="bar">
+            <div class="bar-fill z" id="barZ"></div>
+          </div>
         </div>
         <p class="magnitude">|a| = <span id="magnitude">0.000</span> g</p>
 
@@ -102,7 +126,8 @@
           <div class="threshold-actions">
             <button type="button" id="motionThresholdConfirmBtn" class="confirm-threshold-btn">Xác nhận</button>
           </div>
-          <p class="threshold-current" id="motionThresholdCurrent">Hiện tại trên ESP32: cảnh báo 0.50 / nguy hiểm 2.00</p>
+          <p class="threshold-current" id="motionThresholdCurrent">Hiện tại trên ESP32: cảnh báo 0.50 / nguy hiểm 2.00
+          </p>
         </div>
       </div>
 
@@ -241,7 +266,9 @@
       </div>
 
       <div class="camera-frame-wrap">
-        <img id="cameraStream" class="camera-stream" src="https://ambassador-plan-foundations-theatre.trycloudflare.com/api/camera/stream" alt="Camera hiện trường" />
+        <img id="cameraStream" class="camera-stream"
+          src="https://ambassador-plan-foundations-theatre.trycloudflare.com/api/camera/stream"
+          alt="Camera hiện trường" />
         <div id="cameraStatus" class="camera-status">Đang chờ stream camera...</div>
       </div>
 
@@ -294,7 +321,8 @@
       <div class="hazard-toolbar">
         <input type="text" id="hazardSearch" placeholder="Lọc theo tỉnh/thành, xã/phường...">
         <button id="hazardRefreshBtn">Làm mới</button>
-        <a class="hazard-source-link" href="https://luquetsatlo.nchmf.gov.vn/" target="_blank" rel="noopener noreferrer">Mở trang gốc ↗</a>
+        <a class="hazard-source-link" href="https://luquetsatlo.nchmf.gov.vn/" target="_blank"
+          rel="noopener noreferrer">Mở trang gốc ↗</a>
       </div>
       <p class="hazard-status" id="hazardStatus">Đang tải dữ liệu cảnh báo...</p>
       <div class="hazard-list" id="hazardList"></div>
@@ -316,7 +344,8 @@
           <span class="external-arrow">↗</span>
         </a>
       </div>
-      <p class="note">Hai trang trên chặn nhúng iframe (chính sách bảo mật .gov.vn) nên được hiển thị dưới dạng liên kết trực tiếp thay vì nhúng khung.</p>
+      <p class="note">Hai trang trên chặn nhúng iframe (chính sách bảo mật .gov.vn) nên được hiển thị dưới dạng liên kết
+        trực tiếp thay vì nhúng khung.</p>
     </section>
 
   </main>
@@ -324,12 +353,15 @@
   <div id="alertStack" class="alert-stack" aria-live="polite" aria-atomic="true"></div>
 
   <footer class="footer">
-    Kết nối tới broker <b>broker.hivemq.com</b> qua WebSocket · Topic mặc định: <code>terraguard/sensors/esp32</code>
+    TUIOT — Engineering ideas into connected reality.
   </footer>
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.1/mqtt.min.js"></script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="script.js"></script>
 </body>
+
 </html>

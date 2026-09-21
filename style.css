@@ -365,7 +365,7 @@ body.danger-mode .kpi-card.soil-card {
   border-radius: 20px;
   padding: 20px 18px 18px;
   box-shadow: var(--shadow-soft);
-  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+  transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1), border-color 0.3s ease, box-shadow 0.3s ease;
   position: relative;
   overflow: hidden;
 }
@@ -378,12 +378,18 @@ body.danger-mode .kpi-card.soil-card {
   height: 2px;
   background: linear-gradient(90deg, transparent, rgba(94,234,212,0.75), transparent);
   opacity: 0.6;
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 .card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(94, 234, 212, 0.25);
-  box-shadow: 0 26px 60px rgba(2, 8, 13, 0.68);
+  transform: translateY(-4px);
+  border-color: rgba(94, 234, 212, 0.35);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(94, 234, 212, 0.08);
+}
+
+.card:hover::before {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.9), transparent);
 }
 
 .card h3 {
@@ -1565,4 +1571,60 @@ canvas {
   .camera-frame-wrap {
     aspect-ratio: 4 / 3;
   }
+}
+
+/* ---------- Page Loader ---------- */
+.page-loader {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.6s cubic-bezier(0.25, 1, 0.5, 1), visibility 0.6s ease;
+  backdrop-filter: blur(10px);
+}
+
+.page-loader.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.loader-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 3px solid rgba(94, 234, 212, 0.15);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent-strong);
+  animation: spin 1s linear infinite;
+  box-shadow: 0 0 20px rgba(94, 234, 212, 0.2);
+}
+
+.loader-text {
+  color: var(--text-dim);
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+  animation: pulse-text 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulse-text {
+  0% { opacity: 0.5; }
+  100% { opacity: 1; text-shadow: 0 0 10px rgba(94, 234, 212, 0.4); }
 }
