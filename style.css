@@ -356,7 +356,11 @@ body.danger-mode .kpi-card.soil-card {
 }
 
 .grid > .card:nth-child(5) {
-  grid-column: span 8;
+  grid-column: span 4;
+}
+
+.grid > .card:nth-child(6) {
+  grid-column: span 4;
 }
 
 .card {
@@ -732,6 +736,165 @@ body.danger-mode .kpi-card.soil-card {
   margin-top: 8px;
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* ---------- Phone Config Card ---------- */
+.phone-config-card {
+  border-color: rgba(168, 85, 247, 0.28);
+}
+
+.phone-config-card::before {
+  background: linear-gradient(90deg, transparent, rgba(168, 85, 247, 0.75), transparent) !important;
+}
+
+.phone-config-card:hover {
+  border-color: rgba(168, 85, 247, 0.5);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(168, 85, 247, 0.12);
+}
+
+.phone-current-display {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(139, 92, 246, 0.06));
+  border: 1px solid rgba(168, 85, 247, 0.2);
+  margin-bottom: 16px;
+}
+
+.phone-icon {
+  font-size: 28px;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  flex-shrink: 0;
+}
+
+.phone-current-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.phone-current-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+
+.phone-current-info strong {
+  font-size: 18px;
+  font-weight: 800;
+  color: #c4b5fd;
+  letter-spacing: 0.5px;
+  word-break: break-all;
+}
+
+.phone-input-box {
+  margin-top: 0;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.phone-input-box label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.phone-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.phone-input-row input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(168, 85, 247, 0.22);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.phone-input-row input:focus {
+  outline: none;
+  border-color: rgba(168, 85, 247, 0.7);
+  box-shadow: 0 0 0 4px rgba(168, 85, 247, 0.1);
+}
+
+.phone-input-row input::placeholder {
+  color: rgba(255,255,255,0.2);
+  font-weight: 400;
+}
+
+.phone-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  opacity: 0.7;
+}
+
+.phone-test-call {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.phone-test-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.18), rgba(251, 146, 60, 0.15));
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  color: #fca5a5;
+  border-radius: 10px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease, background .15s ease;
+  white-space: nowrap;
+}
+
+.phone-test-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(248, 113, 113, 0.7);
+  box-shadow: 0 8px 20px rgba(248, 113, 113, 0.15);
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.28), rgba(251, 146, 60, 0.22));
+}
+
+.phone-test-btn:active {
+  transform: translateY(0);
+}
+
+.phone-test-btn span {
+  font-size: 16px;
+}
+
+.phone-test-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  opacity: 0.7;
 }
 
 .info-list {

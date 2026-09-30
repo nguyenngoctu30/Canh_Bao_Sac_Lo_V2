@@ -181,6 +181,32 @@
         </ul>
       </div>
 
+      <div class="card phone-config-card">
+        <h3>Số điện thoại cảnh báo</h3>
+        <div class="phone-current-display">
+          <span class="phone-icon">📞</span>
+          <div class="phone-current-info">
+            <span class="phone-current-label">Số đang dùng trên ESP32</span>
+            <strong id="phoneCurrentValue">Chưa rõ</strong>
+          </div>
+        </div>
+        <div class="phone-input-box">
+          <label for="phoneInput">Nhập số điện thoại mới (dạng +84...)</label>
+          <div class="phone-input-row">
+            <input type="tel" id="phoneInput" placeholder="+84327740142" maxlength="15" autocomplete="tel">
+            <button type="button" id="phoneSendBtn" class="confirm-threshold-btn">Cập nhật</button>
+          </div>
+          <p class="phone-hint">Định dạng quốc tế: +84 + số (bỏ số 0 đầu). VD: 0327740142 → +84327740142</p>
+        </div>
+        <div class="phone-test-call">
+          <button type="button" id="phoneTestCallBtn" class="phone-test-btn">
+            <span>📲</span> Gọi thử
+          </button>
+          <p class="phone-test-note">Bấm để ESP32 gọi thử đến số điện thoại đang cấu hình</p>
+        </div>
+        <p class="threshold-current" id="phoneStatus"></p>
+      </div>
+
       <div class="card">
         <h3>Mực nước (siêu âm AJ-SR04M)</h3>
         <div class="metric-row">

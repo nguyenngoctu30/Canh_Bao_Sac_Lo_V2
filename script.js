@@ -18,6 +18,8 @@ const MQTT_SOIL_THRESHOLD_TOPIC = params.get("soilThresholdTopic") || "terraguar
 const MQTT_WATER_THRESHOLD_TOPIC = params.get("waterThresholdTopic") || "terraguard/config/esp32/water_threshold";
 const MQTT_MOTION_WARNING_THRESHOLD_TOPIC = params.get("motionWarningThresholdTopic") || "terraguard/config/esp32/motion_warning_threshold";
 const MQTT_MOTION_DANGER_THRESHOLD_TOPIC = params.get("motionDangerThresholdTopic") || "terraguard/config/esp32/motion_danger_threshold";
+const MQTT_ALERT_PHONE_TOPIC = params.get("alertPhoneTopic") || "terraguard/config/esp32/alert_phone";
+const MQTT_CALL_TEST_TOPIC = params.get("callTestTopic") || "terraguard/config/esp32/call_test";
 const CAMERA_API_BASE = "https://ambassador-plan-foundations-theatre.trycloudflare.com";
 const CAMERA_STREAM_URL = `${CAMERA_API_BASE}/api/camera/stream`;
 const THRESHOLD_CONFIG_TOPICS = [
@@ -111,6 +113,13 @@ const cameraCaptureBtn = document.getElementById("cameraCaptureBtn");
 const latestCaptureImageEl = document.getElementById("latestCaptureImage");
 const latestCaptureMetaEl = document.getElementById("latestCaptureMeta");
 const cameraHistoryListEl = document.getElementById("cameraHistoryList");
+
+// Số điện thoại cảnh báo
+const phoneInput = document.getElementById("phoneInput");
+const phoneSendBtn = document.getElementById("phoneSendBtn");
+const phoneTestCallBtn = document.getElementById("phoneTestCallBtn");
+const phoneCurrentValueEl = document.getElementById("phoneCurrentValue");
+const phoneStatusEl = document.getElementById("phoneStatus");
 
 const logList = document.getElementById("logList");
 const canvas = document.getElementById("movementChart");
@@ -686,6 +695,12 @@ function connectMQTT() {
       }
     });
 
+    // Subscribe topic số điện thoại cảnh báo (retained)
+    client.subscribe(MQTT_ALERT_PHONE_TOPIC, { qos: 0 }, (err) => {
+      if (err) console.error("[MQTT] Subscribe phone topic lỗi:", err);
+      else console.log("[MQTT] Subscribe phone topic OK:", MQTT_ALERT_PHONE_TOPIC);
+    });
+
     THRESHOLD_CONFIG_TOPICS.forEach((topic) => {
       client.subscribe(topic, { qos: 0 }, (err, granted) => {
         if (err) {
@@ -715,6 +730,15 @@ function connectMQTT() {
   client.on("message", (topic, payload) => {
     const raw = payload.toString();
     console.log("[MQTT] Nhận message trên topic:", topic, "| raw:", raw);
+
+    // Nhận số điện thoại retained từ ESP32
+    if (topic === MQTT_ALERT_PHONE_TOPIC) {
+      const phone = raw.trim();
+      if (phone && phoneCurrentValueEl) {
+        phoneCurrentValueEl.textContent = phone;
+      }
+      return;
+    }
 
     if (topic === MQTT_SOIL_THRESHOLD_TOPIC) {
       const value = Number(raw);
@@ -994,6 +1018,118 @@ motionDangerInput.addEventListener("input", () => {
 motionThresholdConfirmBtn.addEventListener("click", () => {
   sendMotionThresholds();
 });
+
+// ================== SỐ ĐIỆN THOẠI CẢNH BÁO ==================
+function isValidPhoneNumber(phone) {
+  if (!phone || !phone.startsWith("+")) return false;
+  const digits = phone.slice(1);
+  if (!/^\d+$/.test(digits)) return false;
+  return phone.length >= 10 && phone.length <= 15;
+}
+
+function sendAlertPhone() {
+  let phone = (phoneInput.value || "").trim();
+
+  // Tự chuyển đổi dạng 0xxx thành +84xxx
+  if (phone.startsWith("0") && phone.length >= 9) {
+    phone = "+84" + phone.slice(1);
+    phoneInput.value = phone;
+  }
+
+  if (!isValidPhoneNumber(phone)) {
+    showAlert({
+      type: "warning",
+      title: "Số điện thoại không hợp lệ",
+      message: "Vui lòng nhập dạng quốc tế (+84...) hoặc 0xxx. VD: +84327740142",
+      key: "phone-invalid"
+    });
+    if (phoneStatusEl) phoneStatusEl.textContent = "❌ Số không hợp lệ";
+    return;
+  }
+
+  if (!mqttClientRef || !mqttClientRef.connected) {
+    showAlert({
+      type: "warning",
+      title: "Chưa kết nối MQTT",
+      message: "Không thể gửi số điện thoại vì chưa kết nối tới broker.",
+      key: "phone-offline"
+    });
+    if (phoneStatusEl) phoneStatusEl.textContent = "❌ Chưa kết nối MQTT";
+    return;
+  }
+
+  mqttClientRef.publish(MQTT_ALERT_PHONE_TOPIC, phone, { retain: true, qos: 0 }, (err) => {
+    if (err) {
+      showAlert({
+        type: "danger",
+        title: "Gửi thất bại",
+        message: "Không gửi được số điện thoại xuống ESP32.",
+        key: "phone-fail"
+      });
+      if (phoneStatusEl) phoneStatusEl.textContent = "❌ Gửi thất bại";
+      return;
+    }
+
+    if (phoneCurrentValueEl) phoneCurrentValueEl.textContent = phone;
+    showAlert({
+      type: "info",
+      title: "Đã gửi số điện thoại",
+      message: `Số ${phone} đã được gửi xuống ESP32 và lưu vào bộ nhớ.`,
+      key: "phone-ok"
+    });
+    if (phoneStatusEl) phoneStatusEl.textContent = `✅ Đã gửi ${phone} — ESP32 sẽ lưu vào EEPROM`;
+  });
+}
+
+function sendCallTest() {
+  if (!mqttClientRef || !mqttClientRef.connected) {
+    showAlert({
+      type: "warning",
+      title: "Chưa kết nối MQTT",
+      message: "Không thể gọi thử vì chưa kết nối tới broker.",
+      key: "calltest-offline"
+    });
+    return;
+  }
+
+  mqttClientRef.publish(MQTT_CALL_TEST_TOPIC, "test", { qos: 0 }, (err) => {
+    if (err) {
+      showAlert({
+        type: "danger",
+        title: "Gửi lệnh gọi thử thất bại",
+        message: "Không thể yêu cầu ESP32 gọi thử.",
+        key: "calltest-fail"
+      });
+      return;
+    }
+
+    showAlert({
+      type: "info",
+      title: "Đã gửi lệnh gọi thử",
+      message: "ESP32 sẽ gọi đến số điện thoại đang cấu hình. Vui lòng đợi...",
+      key: "calltest-ok"
+    });
+    if (phoneStatusEl) phoneStatusEl.textContent = "📲 Đã gửi lệnh gọi thử — chờ ESP32 thực hiện...";
+  });
+}
+
+if (phoneSendBtn) {
+  phoneSendBtn.addEventListener("click", sendAlertPhone);
+}
+
+if (phoneTestCallBtn) {
+  phoneTestCallBtn.addEventListener("click", sendCallTest);
+}
+
+// Cho phép nhấn Enter để gửi SĐT
+if (phoneInput) {
+  phoneInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendAlertPhone();
+    }
+  });
+}
 
 baselineSetBtn.addEventListener("click", () => {
   const value = parseFloat(baselineInput.value);
