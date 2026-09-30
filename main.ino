@@ -217,7 +217,7 @@ unsigned long lastMqttRetry = 0;
 // ---------- Lọc & chống nhiễu ----------
 const int CALIBRATION_SAMPLES = 100;
 const int MOVEMENT_FILTER_WINDOW = 8;
-const int STATE_CONFIRM_COUNT = 1;
+const int STATE_CONFIRM_COUNT = 1;   // chốt trạng thái ngay, không chờ
 
 float movementBuffer[MOVEMENT_FILTER_WINDOW];
 int movementBufferIndex = 0;
@@ -233,10 +233,10 @@ int pendingStateCount = 0;
 #define SIM_BAUDRATE 115200
 HardwareSerial simSerial(1);   // UART1 (UART2 đang dùng cho GPS)
 
-String alertPhone = "+84327740142";                  // số mặc định, SỬA LẠI (dạng +84901234567)
+String alertPhone = "+84327740142";                  // số mặc định (web có thể đổi qua MQTT)
 
 const unsigned long CALL_DURATION_MS = 25000UL;      // đổ chuông tối đa 25s rồi tự cúp
-const unsigned long CALL_COOLDOWN_MS = 30000UL;     // 5 phút mới gọi lại nếu cảnh báo còn kéo dài
+const unsigned long CALL_COOLDOWN_MS = 30000UL;      // nếu cảnh báo còn kéo dài, gọi lại sau 30s
 
 // true: gọi cả khi rung ở mức "warning"; false: chỉ gọi khi rung "danger"
 const bool CALL_ON_MOTION_WARNING = true;
@@ -252,6 +252,13 @@ String simRx = "";
 bool callTestRequested = false;
 unsigned long lastSimInitTry = 0;
 
+bool prevAlert = false;              // trạng thái cảnh báo ở lần kiểm tra trước (để bắt thời điểm vừa bật)
+
+// Đồng bộ số điện thoại với web
+bool phoneRetainedSeen = false;      // đã nhận được message trên topic số điện thoại chưa
+bool phonePublishPending = false;    // đang chờ quyết định có đẩy số của ESP32 lên broker không
+unsigned long phoneSubscribeMs = 0;
+
 bool isValidPhoneNumber(const String &phone) {
   if (!phone.startsWith("+")) return false;
   for (unsigned int i = 1; i < phone.length(); i++) {
@@ -262,6 +269,39 @@ bool isValidPhoneNumber(const String &phone) {
 
 void savePhone(const String &phone) {
   preferences.putString("alert_phone", phone);
+}
+
+// Chuẩn hóa về dạng quốc tế +84...
+String normalizePhone(String raw) {
+  raw.trim();
+  String out = "";
+  for (unsigned int i = 0; i < raw.length(); i++) {
+    char c = raw[i];
+    if (isDigit(c) || (c == '+' && out.length() == 0)) out += c;   // bỏ khoảng trắng, dấu chấm, gạch, nháy...
+  }
+  if (out.startsWith("+"))  return out;
+  if (out.startsWith("00")) return "+" + out.substring(2);
+  if (out.startsWith("0"))  return "+84" + out.substring(1);
+  if (out.startsWith("84")) return "+" + out;
+  return out;
+}
+
+// Xử lý message số điện thoại nhận từ web
+void handleAlertPhoneMessage(const String &msg) {
+  phoneRetainedSeen = true;
+  String phone = normalizePhone(msg);
+
+  if (!isValidPhoneNumber(phone)) {
+    Serial.printf("[MQTT] So dien thoai khong hop le: \"%s\"\n", msg.c_str());
+    return;
+  }
+  if (phone == alertPhone) {
+    Serial.printf("[MQTT] So dien thoai khong doi: %s\n", alertPhone.c_str());
+    return;
+  }
+  alertPhone = phone;
+  savePhone(alertPhone);
+  Serial.printf("[MQTT] Da nhan so dien thoai canh bao moi: %s (da luu vao NVS)\n", alertPhone.c_str());
 }
 
 // Gửi lệnh AT và chờ phản hồi (blocking ngắn)
@@ -305,17 +345,8 @@ bool initSim(int attemptsPerBaud) {
   return true;
 }
 
-// Kiểm tra đã đăng ký mạng (LTE / 2G-3G) - ",1" = home, ",5" = roaming
-bool simNetworkRegistered() {
-  const char* cmds[] = {"AT+CEREG?", "AT+CREG?", "AT+CGREG?"};
-  for (int i = 0; i < 3; i++) {
-    String r = simCommand(cmds[i]);
-    if (r.indexOf(",1") >= 0 || r.indexOf(",5") >= 0) return true;
-  }
-  return false;
-}
-
 // Bắt đầu cuộc gọi thoại (không chặn). Dấu ';' ở cuối là BẮT BUỘC cho cuộc gọi thoại.
+// Gửi ATD ngay, không kiểm tra mạng trước để gọi nhanh nhất.
 void startAlertCall() {
   if (!simReady) {
     Serial.println("[CALL] Module SIM chua san sang, thu khoi tao lai...");
@@ -328,9 +359,6 @@ void startAlertCall() {
   if (!isValidPhoneNumber(alertPhone)) {
     Serial.println("[CALL] So dien thoai khong hop le, bo qua");
     return;
-  }
-  if (!simNetworkRegistered()) {
-    Serial.println("[CALL] CANH BAO: chua dang ky mang (kiem tra SIM/anten/VoLTE), van thu goi");
   }
   simRx = "";
   while (simSerial.available()) simSerial.read();
@@ -365,7 +393,11 @@ void serviceSim() {
 
   if (ended || timeout) {
     simSerial.println("ATH");
-    Serial.printf("[CALL] Ket thuc (%s)\n", ended ? "module bao" : "het gio");
+    // Cuộc gọi thất bại ngay (< 5s): cho phép thử lại sau ~30s thay vì chờ hết cooldown
+    bool failedFast = ended && (millis() - callStartMs < 5000UL);
+    Serial.printf("[CALL] Ket thuc (%s)%s\n", ended ? "module bao" : "het gio",
+                  failedFast ? " - THAT BAI SOM, se thu lai" : "");
+    if (failedFast) lastCallMs = millis() - (CALL_COOLDOWN_MS > 30000UL ? CALL_COOLDOWN_MS - 30000UL : 0);
     callState = CALL_IDLE;
     simRx = "";
   }
@@ -382,11 +414,16 @@ void handleSerialCommands() {
   }
 }
 
-// Gọi khi cảnh báo đang bật, không đang gọi, và đã qua thời gian chờ
+// Gọi NGAY khi cảnh báo vừa xuất hiện (bỏ qua cooldown).
+// Nếu cảnh báo còn kéo dài thì gọi lại sau mỗi CALL_COOLDOWN_MS.
 void maybeTriggerCall(bool alert) {
+  bool rising = alert && !prevAlert;   // cảnh báo vừa mới bật
+  prevAlert = alert;
+
   if (!alert || callState != CALL_IDLE) return;
-  if (callEverMade && millis() - lastCallMs < CALL_COOLDOWN_MS) return;
-  Serial.println("[CALL] Co canh bao -> tien hanh goi dien");
+  if (!rising && callEverMade && millis() - lastCallMs < CALL_COOLDOWN_MS) return;
+
+  Serial.println("[CALL] CANH BAO -> GOI NGAY");
   startAlertCall();
 }
 
@@ -526,6 +563,10 @@ void reconnectWiFiIfNeeded() {
 }
 
 void subscribeAllTopics() {
+  phoneRetainedSeen = false;
+  phonePublishPending = true;
+  phoneSubscribeMs = millis();
+
   mqttClient.subscribe(MQTT_CONFIG_TOPIC);
   mqttClient.subscribe(MQTT_SOIL_THRESHOLD_TOPIC);
   mqttClient.subscribe(MQTT_WATER_THRESHOLD_TOPIC);
@@ -600,13 +641,7 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
   }
 
   if (topicStr == MQTT_ALERT_PHONE_TOPIC) {
-    if (isValidPhoneNumber(msg)) {
-      alertPhone = msg;
-      savePhone(alertPhone);
-      Serial.printf("[MQTT] Da nhan so dien thoai canh bao: %s (da luu)\n", alertPhone.c_str());
-    } else {
-      Serial.printf("[MQTT] So dien thoai khong hop le: \"%s\"\n", msg.c_str());
-    }
+    handleAlertPhoneMessage(msg);
     return;
   }
 
@@ -808,6 +843,15 @@ void loop() {
   reconnectMQTTIfNeeded();
   mqttClient.loop();
 
+  // Sau 2s từ lúc subscribe: nếu broker không có số retained nào thì đẩy số của ESP32 lên cho web hiển thị
+  if (phonePublishPending && mqttClient.connected() && millis() - phoneSubscribeMs > 2000UL) {
+    phonePublishPending = false;
+    if (!phoneRetainedSeen) {
+      mqttClient.publish(MQTT_ALERT_PHONE_TOPIC, alertPhone.c_str(), true);   // retain = true
+      Serial.printf("[MQTT] Broker chua co so dien thoai -> dua so hien tai len: %s\n", alertPhone.c_str());
+    }
+  }
+
   unsigned long now = millis();
 
   if (now - lastPublish >= PUBLISH_INTERVAL_MS) {
@@ -816,13 +860,14 @@ void loop() {
     // ---- Rung (ADXL345). Nếu ADXL lỗi thì coi như "stable", các cảnh báo khác vẫn chạy ----
     AdxlData a = {0, 0, 0};
     float movement = 0;
-    const char* state = "stable";
+    const char* state = "stable";            // trạng thái gửi lên web (đã lọc, mượt)
+    const char* callMotionState = "stable";  // trạng thái dùng để gọi điện (giá trị thô, phản ứng ngay)
 
     if (adxlOk && readADXL345(a)) {
       float rawMovement = calculateMovement(a);
       movement = filterMovement(rawMovement);
-      const char* rawState = motionStateFromMovement(movement);
-      state = confirmState(rawState);
+      callMotionState = motionStateFromMovement(rawMovement);
+      state = confirmState(motionStateFromMovement(movement));
 
       Serial.printf("ADXL345 | Acc[g] X:%7.3f Y:%7.3f Z:%7.3f | Raw:%.3f Filtered:%.3f | State: %s\n",
                     a.x, a.y, a.z, rawMovement, movement, state);
@@ -858,8 +903,8 @@ void loop() {
     }
 
     // ---- Kích hoạt cuộc gọi cảnh báo (chỉ gọi điện, không SMS) ----
-    bool motionAlert = CALL_ON_MOTION_WARNING ? (strcmp(state, "stable") != 0)
-                                              : (strcmp(state, "danger") == 0);
+    bool motionAlert = CALL_ON_MOTION_WARNING ? (strcmp(callMotionState, "stable") != 0)
+                                              : (strcmp(callMotionState, "danger") == 0);
     bool anyAlert = motionAlert || soilWarning || waterWarning;
     maybeTriggerCall(anyAlert);
 
