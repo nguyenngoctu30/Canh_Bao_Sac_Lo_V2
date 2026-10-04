@@ -20,7 +20,7 @@ const MQTT_MOTION_WARNING_THRESHOLD_TOPIC = params.get("motionWarningThresholdTo
 const MQTT_MOTION_DANGER_THRESHOLD_TOPIC = params.get("motionDangerThresholdTopic") || "terraguard/config/esp32/motion_danger_threshold";
 const MQTT_ALERT_PHONE_TOPIC = params.get("alertPhoneTopic") || "terraguard/config/esp32/alert_phone";
 const MQTT_CALL_TEST_TOPIC = params.get("callTestTopic") || "terraguard/config/esp32/call_test";
-const CAMERA_API_BASE = "https://beads-cash-dried-person.trycloudflare.com";
+const CAMERA_API_BASE = "https://lifetime-extra-connecticut-gibraltar.trycloudflare.com";
 const CAMERA_STREAM_URL = `${CAMERA_API_BASE}/api/camera/stream`;
 const THRESHOLD_CONFIG_TOPICS = [
   MQTT_SOIL_THRESHOLD_TOPIC,
