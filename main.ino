@@ -14,6 +14,14 @@
  *                       Cấp nguồn RIÊNG cho module (thường 5V, >= 2A).
  *                       Kiểm tra mức logic UART của board module (1.8V/3.3V/5V).
  *
+ * THAY ĐỔI SO VỚI BẢN CŨ:
+ *  - Sửa lỗi ngưỡng rung không lưu được: key NVS tối đa 15 ký tự
+ *    ("motion_warn_thresh" / "motion_danger_thresh" quá dài -> đổi thành "mot_warn" / "mot_danger").
+ *  - Kiểm tra giá trị trả về của putFloat để báo lỗi lưu NVS.
+ *  - Kiểm tra ngưỡng nguy hiểm phải lớn hơn ngưỡng cảnh báo.
+ *  - Gửi thêm tọa độ GPS ("gps":{"lat","lon"}) lên MQTT (web đang chờ trường này).
+ *  - Nhận cả câu NMEA $GN.. (NEO-6M/GNSS đôi khi dùng $GNRMC thay vì $GPRMC).
+ *
  * LƯU Ý: Struct phải khai báo ngay sau #include (tránh lỗi prototype của Arduino IDE).
  */
 
@@ -33,6 +41,15 @@ struct GpsData {
   double latitude;
   double longitude;
 };
+
+// ================== TÊN KEY NVS (TỐI ĐA 15 KÝ TỰ!) ==================
+#define NVS_NAMESPACE      "terraguard"
+#define KEY_BASELINE       "baseline"       // 8
+#define KEY_SOIL_THRESH    "soil_thresh"    // 11
+#define KEY_WATER_THRESH   "water_thresh"   // 12
+#define KEY_MOT_WARN       "mot_warn"       // 8
+#define KEY_MOT_DANGER     "mot_danger"     // 10
+#define KEY_ALERT_PHONE    "alert_phone"    // 11
 
 // ================== GPS NEO-6M ==================
 #define GPS_SERIAL Serial2
@@ -69,56 +86,58 @@ double convertDmmToDecimal(String dmm, char hemi) {
 }
 
 bool parseNmeaLine(const String &line, GpsData &gpsOut) {
-  if (line.startsWith("$GPRMC") || line.startsWith("$GPGGA")) {
-    String trimmed = line;
-    trimmed.trim();
-    if (trimmed.length() < 10) return false;
+  bool isRmc = line.startsWith("$GPRMC") || line.startsWith("$GNRMC");
+  bool isGga = line.startsWith("$GPGGA") || line.startsWith("$GNGGA");
+  if (!isRmc && !isGga) return false;
 
-    int firstComma = trimmed.indexOf(',');
-    if (firstComma < 0) return false;
+  String trimmed = line;
+  trimmed.trim();
+  if (trimmed.length() < 10) return false;
 
-    int count = 0;
-    String parts[20];
-    int start = 0;
-    for (int i = 0; i <= (int)trimmed.length(); i++) {
-      if (i == (int)trimmed.length() || trimmed.charAt(i) == ',') {
-        if (count < 20) parts[count++] = trimmed.substring(start, i);
-        start = i + 1;
-      }
+  int firstComma = trimmed.indexOf(',');
+  if (firstComma < 0) return false;
+
+  int count = 0;
+  String parts[20];
+  int start = 0;
+  for (int i = 0; i <= (int)trimmed.length(); i++) {
+    if (i == (int)trimmed.length() || trimmed.charAt(i) == ',') {
+      if (count < 20) parts[count++] = trimmed.substring(start, i);
+      start = i + 1;
     }
+  }
 
-    if (line.startsWith("$GPRMC") && count >= 12) {
-      String status = parts[2];
-      if (status != "A") return false;
+  if (isRmc && count >= 12) {
+    String status = parts[2];
+    if (status != "A") return false;
 
-      String latStr = parts[3];
-      String latHem = parts[4];
-      String lonStr = parts[5];
-      String lonHem = parts[6];
+    String latStr = parts[3];
+    String latHem = parts[4];
+    String lonStr = parts[5];
+    String lonHem = parts[6];
 
-      if (latStr.length() > 0 && lonStr.length() > 0 && latHem.length() > 0 && lonHem.length() > 0) {
-        gpsOut.latitude = convertDmmToDecimal(latStr, latHem.charAt(0));
-        gpsOut.longitude = convertDmmToDecimal(lonStr, lonHem.charAt(0));
-        gpsOut.valid = true;
-        return true;
-      }
+    if (latStr.length() > 0 && lonStr.length() > 0 && latHem.length() > 0 && lonHem.length() > 0) {
+      gpsOut.latitude = convertDmmToDecimal(latStr, latHem.charAt(0));
+      gpsOut.longitude = convertDmmToDecimal(lonStr, lonHem.charAt(0));
+      gpsOut.valid = true;
+      return true;
     }
+  }
 
-    if (line.startsWith("$GPGGA") && count >= 11) {
-      String fixQuality = parts[6];
-      if (fixQuality.toInt() < 1) return false;
+  if (isGga && count >= 11) {
+    String fixQuality = parts[6];
+    if (fixQuality.toInt() < 1) return false;
 
-      String latStr = parts[2];
-      String latHem = parts[3];
-      String lonStr = parts[4];
-      String lonHem = parts[5];
+    String latStr = parts[2];
+    String latHem = parts[3];
+    String lonStr = parts[4];
+    String lonHem = parts[5];
 
-      if (latStr.length() > 0 && lonStr.length() > 0 && latHem.length() > 0 && lonHem.length() > 0) {
-        gpsOut.latitude = convertDmmToDecimal(latStr, latHem.charAt(0));
-        gpsOut.longitude = convertDmmToDecimal(lonStr, lonHem.charAt(0));
-        gpsOut.valid = true;
-        return true;
-      }
+    if (latStr.length() > 0 && lonStr.length() > 0 && latHem.length() > 0 && lonHem.length() > 0) {
+      gpsOut.latitude = convertDmmToDecimal(latStr, latHem.charAt(0));
+      gpsOut.longitude = convertDmmToDecimal(lonStr, lonHem.charAt(0));
+      gpsOut.valid = true;
+      return true;
     }
   }
   return false;
@@ -268,7 +287,15 @@ bool isValidPhoneNumber(const String &phone) {
 }
 
 void savePhone(const String &phone) {
-  preferences.putString("alert_phone", phone);
+  preferences.putString(KEY_ALERT_PHONE, phone);
+}
+
+// Lưu float vào NVS và báo lỗi nếu thất bại
+void saveFloatNvs(const char* key, float value) {
+  size_t written = preferences.putFloat(key, value);
+  if (written == 0) {
+    Serial.printf("[NVS] LUU THAT BAI key \"%s\" (key toi da 15 ky tu!)\n", key);
+  }
 }
 
 // Chuẩn hóa về dạng quốc tế +84...
@@ -587,7 +614,7 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
     float newBaseline = msg.toFloat();
     if (newBaseline > 0 && newBaseline < 500) {
       baselineDistanceCm = newBaseline;
-      preferences.putFloat("baseline", baselineDistanceCm);
+      saveFloatNvs(KEY_BASELINE, baselineDistanceCm);
       Serial.printf("[MQTT] Da nhan khoang cach co dinh moi tu web: %.1f cm (da luu vao bo nho)\n",
                     baselineDistanceCm);
     } else {
@@ -600,7 +627,7 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
     float threshold = msg.toFloat();
     if (threshold >= 0 && threshold <= 100) {
       soilHumidityWarningThreshold = threshold;
-      preferences.putFloat("soil_thresh", soilHumidityWarningThreshold);
+      saveFloatNvs(KEY_SOIL_THRESH, soilHumidityWarningThreshold);
       Serial.printf("[MQTT] Da nhan nguong do am canh bao: %.1f%% (da luu)\n",
                     soilHumidityWarningThreshold);
     } else {
@@ -613,7 +640,7 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
     float threshold = msg.toFloat();
     if (threshold >= 0 && threshold <= 200) {
       waterLevelWarningThreshold = threshold;
-      preferences.putFloat("water_thresh", waterLevelWarningThreshold);
+      saveFloatNvs(KEY_WATER_THRESH, waterLevelWarningThreshold);
       Serial.printf("[MQTT] Da nhan nguong muc nuoc canh bao: %.1f cm (da luu)\n",
                     waterLevelWarningThreshold);
     } else {
@@ -626,10 +653,22 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
     float threshold = msg.toFloat();
     if (threshold >= 0 && threshold <= 20) {
       motionWarningThreshold = threshold;
-      preferences.putFloat("motion_warn_thresh", motionWarningThreshold);
-      Serial.printf("[MQTT] Da nhan nguong rung canh bao: %.2f g (da luu)\n", motionWarningThreshold);
+      saveFloatNvs(KEY_MOT_WARN, motionWarningThreshold);
+      Serial.printf("[MQTT] Da nhan nguong rung canh bao: %.2f (da luu)\n", motionWarningThreshold);
     } else {
       Serial.printf("[MQTT] Gia tri nguong rung canh bao khong hop le: \"%s\"\n", msg.c_str());
+    }
+    return;
+  }
+
+  if (topicStr == MQTT_MOTION_DANGER_THRESHOLD_TOPIC) {
+    float threshold = msg.toFloat();
+    if (threshold >= 0 && threshold <= 20) {
+      motionDangerThreshold = threshold;
+      saveFloatNvs(KEY_MOT_DANGER, motionDangerThreshold);
+      Serial.printf("[MQTT] Da nhan nguong rung nguy hiem: %.2f (da luu)\n", motionDangerThreshold);
+    } else {
+      Serial.printf("[MQTT] Gia tri nguong rung nguy hiem khong hop le: \"%s\"\n", msg.c_str());
     }
     return;
   }
@@ -643,17 +682,6 @@ void mqttCallback(char* topic, byte* payloadBytes, unsigned int length) {
   if (topicStr == MQTT_ALERT_PHONE_TOPIC) {
     handleAlertPhoneMessage(msg);
     return;
-  }
-
-  if (topicStr == MQTT_MOTION_DANGER_THRESHOLD_TOPIC) {
-    float threshold = msg.toFloat();
-    if (threshold >= 0 && threshold <= 20) {
-      motionDangerThreshold = threshold;
-      preferences.putFloat("motion_danger_thresh", motionDangerThreshold);
-      Serial.printf("[MQTT] Da nhan nguong rung nguy hiem: %.2f g (da luu)\n", motionDangerThreshold);
-    } else {
-      Serial.printf("[MQTT] Gia tri nguong rung nguy hiem khong hop le: \"%s\"\n", msg.c_str());
-    }
   }
 }
 
@@ -711,6 +739,7 @@ float filterMovement(float rawMovement) {
   return sum / movementBufferFilled;
 }
 
+// Đơn vị: 0.01 g (|Δa| * 100)
 float calculateMovement(const AdxlData &a) {
   float dx = a.x - adxlBaseX;
   float dy = a.y - adxlBaseY;
@@ -741,7 +770,7 @@ const char* confirmState(const char* newState) {
 String buildSensorPayload(const AdxlData &a, float movement, const char* state, float soilHumidity,
                            float distanceCm, float waterLevelCm, bool waterLevelValid,
                            bool soilWarning, bool waterWarning) {
-  char payload[620];
+  char payload[800];
   bool warning = (strcmp(state, "stable") != 0) || soilWarning || waterWarning;
 
   snprintf(payload, sizeof(payload),
@@ -761,7 +790,18 @@ String buildSensorPayload(const AdxlData &a, float movement, const char* state, 
            movement, state, motionWarningThreshold, motionDangerThreshold, warning ? "true" : "false",
            distanceCm, waterLevelCm, baselineDistanceCm, waterLevelValid ? "true" : "false",
            waterLevelWarningThreshold, waterWarning ? "true" : "false");
-  return String(payload);
+
+  String s = String(payload);
+
+  // Thêm tọa độ GPS (web đọc data.gps.lat / data.gps.lon)
+  if (currentGps.valid) {
+    char gpsBuf[80];
+    snprintf(gpsBuf, sizeof(gpsBuf), ",\"gps\":{\"lat\":%.6f,\"lon\":%.6f}}",
+             currentGps.latitude, currentGps.longitude);
+    s.remove(s.length() - 1);   // bỏ dấu '}' cuối
+    s += gpsBuf;
+  }
+  return s;
 }
 
 // ================== Arduino ==================
@@ -781,18 +821,18 @@ void setup() {
   GPS_SERIAL.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   Serial.println("GPS NEO-6M da khoi dong tren UART2");
 
-  preferences.begin("terraguard", false);
-  baselineDistanceCm = preferences.getFloat("baseline", 50.0f);
-  soilHumidityWarningThreshold = preferences.getFloat("soil_thresh", 80.0f);
-  waterLevelWarningThreshold = preferences.getFloat("water_thresh", 10.0f);
-  motionWarningThreshold = preferences.getFloat("motion_warn_thresh", 0.5f);
-  motionDangerThreshold = preferences.getFloat("motion_danger_thresh", 2.0f);
-  alertPhone = preferences.getString("alert_phone", alertPhone);
+  preferences.begin(NVS_NAMESPACE, false);
+  baselineDistanceCm = preferences.getFloat(KEY_BASELINE, 50.0f);
+  soilHumidityWarningThreshold = preferences.getFloat(KEY_SOIL_THRESH, 80.0f);
+  waterLevelWarningThreshold = preferences.getFloat(KEY_WATER_THRESH, 10.0f);
+  motionWarningThreshold = preferences.getFloat(KEY_MOT_WARN, 0.5f);
+  motionDangerThreshold = preferences.getFloat(KEY_MOT_DANGER, 2.0f);
+  alertPhone = preferences.getString(KEY_ALERT_PHONE, alertPhone);
   Serial.printf("Khoang cach co dinh (baseline) hien tai: %.1f cm\n", baselineDistanceCm);
   Serial.printf("Nguong canh bao do am: %.1f%%\n", soilHumidityWarningThreshold);
   Serial.printf("Nguong canh bao muc nuoc: %.1f cm\n", waterLevelWarningThreshold);
-  Serial.printf("Nguong rung canh bao: %.2f g\n", motionWarningThreshold);
-  Serial.printf("Nguong rung nguy hiem: %.2f g\n", motionDangerThreshold);
+  Serial.printf("Nguong rung canh bao: %.2f\n", motionWarningThreshold);
+  Serial.printf("Nguong rung nguy hiem: %.2f\n", motionDangerThreshold);
   Serial.printf("So dien thoai canh bao: %s\n", alertPhone.c_str());
 
   // Khởi tạo module SIM A7680C (UART1)
