@@ -20,8 +20,41 @@ const MQTT_MOTION_WARNING_THRESHOLD_TOPIC = params.get("motionWarningThresholdTo
 const MQTT_MOTION_DANGER_THRESHOLD_TOPIC = params.get("motionDangerThresholdTopic") || "terraguard/config/esp32/motion_danger_threshold";
 const MQTT_ALERT_PHONE_TOPIC = params.get("alertPhoneTopic") || "terraguard/config/esp32/alert_phone";
 const MQTT_CALL_TEST_TOPIC = params.get("callTestTopic") || "terraguard/config/esp32/call_test";
-const CAMERA_API_BASE = "https://lifetime-extra-connecticut-gibraltar.trycloudflare.com";
-const CAMERA_STREAM_URL = `${CAMERA_API_BASE}/api/camera/stream`;
+
+// ====== Server camera: nhập từ giao diện, lưu vào localStorage ======
+const CAMERA_API_STORAGE_KEY = "terraguard_camera_api_base";
+
+function normalizeCameraBase(url) {
+  let v = (url || "").trim();
+  if (!v) return "";
+  if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+  // bỏ dấu "/" cuối và đuôi /api/camera/stream nếu lỡ dán cả đường dẫn stream
+  return v.replace(/\/+$/, "").replace(/\/api\/camera\/stream$/i, "");
+}
+
+function loadSavedCameraBase() {
+  try {
+    return localStorage.getItem(CAMERA_API_STORAGE_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function saveCameraBase(value) {
+  try {
+    localStorage.setItem(CAMERA_API_STORAGE_KEY, value);
+  } catch (e) {
+    console.warn("Không lưu được localStorage:", e);
+  }
+}
+
+// Ưu tiên ?camera=... trên URL, sau đó tới giá trị đã lưu
+let CAMERA_API_BASE = normalizeCameraBase(params.get("camera") || loadSavedCameraBase());
+
+function getCameraStreamUrl() {
+  return `${CAMERA_API_BASE}/api/camera/stream`;
+}
+
 const THRESHOLD_CONFIG_TOPICS = [
   MQTT_SOIL_THRESHOLD_TOPIC,
   MQTT_WATER_THRESHOLD_TOPIC,
@@ -113,6 +146,9 @@ const cameraCaptureBtn = document.getElementById("cameraCaptureBtn");
 const latestCaptureImageEl = document.getElementById("latestCaptureImage");
 const latestCaptureMetaEl = document.getElementById("latestCaptureMeta");
 const cameraHistoryListEl = document.getElementById("cameraHistoryList");
+const cameraApiInput = document.getElementById("cameraApiInput");
+const cameraApiSaveBtn = document.getElementById("cameraApiSaveBtn");
+const cameraApiNote = document.getElementById("cameraApiNote");
 
 // Số điện thoại cảnh báo
 const phoneInput = document.getElementById("phoneInput");
@@ -138,17 +174,26 @@ topicNameEl.textContent = MQTT_TOPIC;
 
 function reloadCameraStream() {
   if (!cameraStreamEl) return;
+
+  if (!CAMERA_API_BASE) {
+    cameraStreamEl.removeAttribute("src");
+    if (cameraStatusEl) {
+      cameraStatusEl.textContent = "Chưa có server camera. Hãy dán link vào ô phía trên.";
+      cameraStatusEl.classList.add("error");
+    }
+    return;
+  }
+
   if (cameraStatusEl) {
     cameraStatusEl.textContent = "Đang tải stream camera...";
     cameraStatusEl.classList.remove("error");
   }
-
-  const timestamp = `?t=${Date.now()}`;
-  cameraStreamEl.src = `${CAMERA_STREAM_URL}${timestamp}`;
+  cameraStreamEl.src = `${getCameraStreamUrl()}?t=${Date.now()}`;
 }
 
 if (cameraStreamEl) {
   cameraStreamEl.onerror = () => {
+    if (!CAMERA_API_BASE) return;
     if (cameraStatusEl) {
       cameraStatusEl.textContent = "Không thể tải stream camera. Kiểm tra máy chủ camera hoặc URL.";
       cameraStatusEl.classList.add("error");
@@ -365,6 +410,11 @@ async function captureCurrentScene(reason = "manual") {
 }
 
 async function loadCameraHistory() {
+  if (!CAMERA_API_BASE) {
+    cameraHistoryListEl.innerHTML =
+      '<div class="camera-history-item"><div class="meta"><strong>Chưa cấu hình server</strong><span>Dán link server camera ở trên để xem ảnh.</span></div></div>';
+    return;
+  }
   try {
     const response = await fetch(`${CAMERA_API_BASE}/api/images`, {
       method: "GET",
@@ -510,6 +560,51 @@ function updateGpsMap(lat, lon) {
 
   maybeFetchWeather(lat, lon);
 }
+
+// ====== Ô nhập server camera ======
+function updateCameraApiNote() {
+  if (!cameraApiNote) return;
+  cameraApiNote.textContent = CAMERA_API_BASE
+    ? `Đang dùng: ${CAMERA_API_BASE}`
+    : "Chưa cấu hình server camera.";
+}
+
+function applyCameraApiBase() {
+  const value = normalizeCameraBase(cameraApiInput.value);
+  CAMERA_API_BASE = value;
+  saveCameraBase(value);
+  cameraApiInput.value = value;
+  updateCameraApiNote();
+
+  // Reset ảnh chụp gần nhất vì thuộc server cũ
+  if (latestCaptureImageEl) {
+    latestCaptureImageEl.removeAttribute("src");
+    latestCaptureImageEl.style.display = "none";
+  }
+  if (latestCaptureMetaEl) latestCaptureMetaEl.textContent = "Chưa có hình ảnh nào được lưu.";
+
+  reloadCameraStream();
+  loadCameraHistory();
+
+  showAlert({
+    type: "info",
+    title: "Đã cập nhật server camera",
+    message: value || "Đã xóa cấu hình server camera.",
+    key: "camera-api-saved"
+  });
+}
+
+if (cameraApiInput) {
+  cameraApiInput.value = CAMERA_API_BASE;
+  cameraApiInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyCameraApiBase();
+    }
+  });
+}
+if (cameraApiSaveBtn) cameraApiSaveBtn.addEventListener("click", applyCameraApiBase);
+updateCameraApiNote();
 
 initMap();
 startBrowserGpsFallback();
