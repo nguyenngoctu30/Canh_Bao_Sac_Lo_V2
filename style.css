@@ -1280,6 +1280,45 @@ canvas {
   overflow: visible;
 }
 
+/* Ô nhập server camera */
+.camera-api-box {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(56, 189, 248, 0.06);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+}
+
+.camera-api-box label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.camera-api-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.camera-api-row input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: "Consolas", monospace;
+}
+
+.camera-api-row input:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.1);
+}
+
 .camera-frame-wrap {
   position: relative;
   border: 1px solid rgba(94, 234, 212, 0.15);
